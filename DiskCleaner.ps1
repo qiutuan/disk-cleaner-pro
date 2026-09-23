@@ -387,37 +387,586 @@ function Invoke-SafeDelete {
 }
 #endregion
 
-#region 主窗口（骨架：仅横幅 + 占位提示，后续填充各 Tab）
+#region UI 工具（字节格式化 / 风险色 / 占位页）
+function Format-Bytes {
+  param([long]$Bytes)
+  if ($Bytes -le 0) { return '0 B' }
+  $units = 'B', 'KB', 'MB', 'GB', 'TB'
+  $i = 0; $v = [double]$Bytes
+  while ($v -ge 1024 -and $i -lt 4) { $v /= 1024; $i++ }
+  return ('{0:N1} {1}' -f $v, $units[$i])
+}
+
+function Get-RiskColor {
+  param([string]$Risk)
+  switch ($Risk) {
+    'green'  { return $script:Theme.Green }
+    'yellow' { return $script:Theme.Yellow }
+    'red'    { return $script:Theme.Red }
+    default  { return $script:Theme.Text }
+  }
+}
+
+function Get-RiskText {
+  param([string]$Risk)
+  switch ($Risk) {
+    'green'  { return '绝对安全' }
+    'yellow' { return '谨慎' }
+    'red'    { return '需确认' }
+    default  { return '未知' }
+  }
+}
+
+function New-PlaceholderPage {
+  # 附加功能 Tab 占位页（提交6 填充）
+  param([string]$Text, [string]$Msg)
+  $p = New-Object System.Windows.Forms.TabPage
+  $p.Text = $Text
+  $p.BackColor = [System.Drawing.ColorTranslator]::FromHtml($script:Theme.Bg)
+  $l = New-Object System.Windows.Forms.Label
+  $l.Text = $Msg
+  $l.Font = New-Object System.Drawing.Font('Microsoft YaHei', 12)
+  $l.ForeColor = [System.Drawing.ColorTranslator]::FromHtml($script:Theme.Text)
+  $l.AutoSize = $true
+  $l.Location = New-Object System.Drawing.Point(24, 30)
+  $p.Controls.Add($l)
+  return $p
+}
+#endregion
+
+#region 设置持久化（删除模式等，写入 runtime\settings.json）
+$script:Settings = @{ DeleteMode = 'Recycle' }
+function Load-Settings {
+  try {
+    $p = Join-Path $script:DataDir 'settings.json'
+    if (Test-Path $p) {
+      $o = Get-Content -Raw -Encoding UTF8 $p | ConvertFrom-Json
+      if ($o.DeleteMode -eq 'Permanent') { $script:Settings.DeleteMode = 'Permanent' }
+    }
+  } catch { }
+}
+function Save-Settings {
+  try {
+    if (-not (Test-Path $script:DataDir)) {
+      New-Item -ItemType Directory -Force -Path $script:DataDir | Out-Null
+    }
+    [IO.File]::WriteAllText((Join-Path $script:DataDir 'settings.json'), ($script:Settings | ConvertTo-Json), [Text.UTF8Encoding]::new($false))
+  } catch { }
+}
+#endregion
+
+#region 主窗口（橙色主题完整界面）
 function New-MainWindow {
   $f = New-Object System.Windows.Forms.Form
   $f.Text = 'DiskCleanerPro - C 盘智能清理工具'
-  $f.ClientSize = New-Object System.Drawing.Size(1180, 760)
-  $f.MinimumSize = New-Object System.Drawing.Size(900, 600)
+  $f.ClientSize = New-Object System.Drawing.Size(1200, 800)
+  $f.MinimumSize = New-Object System.Drawing.Size(960, 640)
   $f.BackColor = [System.Drawing.ColorTranslator]::FromHtml($script:Theme.Bg)
   $f.StartPosition = 'CenterScreen'
+  $f.Font = New-Object System.Drawing.Font('Microsoft YaHei', 9)
+  $f.Icon = $null   # 纯代码绘制，无图片资源
 
-  # 顶部横幅
+  # ============ 顶部横幅 ============
   $banner = New-Object System.Windows.Forms.Panel
   $banner.Dock = 'Top'
-  $banner.Height = 96
+  $banner.Height = 100
   $banner.BackColor = [System.Drawing.ColorTranslator]::FromHtml($script:Theme.Banner)
+
   $title = New-Object System.Windows.Forms.Label
-  $title.Text = 'DiskCleanerPro   C 盘智能清理工具'
+  $title.Text = 'DiskCleanerPro  C 盘智能清理工具'
   $title.Font = New-Object System.Drawing.Font('Microsoft YaHei', 20, [System.Drawing.FontStyle]::Bold)
   $title.ForeColor = [System.Drawing.Color]::White
-  $title.Location = New-Object System.Drawing.Point(20, 12)
+  $title.Location = New-Object System.Drawing.Point(20, 10)
   $title.AutoSize = $true
   $banner.Controls.Add($title)
-  $f.Controls.Add($banner)
 
-  # 占位提示（骨架阶段）
-  $hint = New-Object System.Windows.Forms.Label
-  $hint.Text = '骨架已就绪：扫描引擎 / 清理项数据 / 完整界面将在后续提交中构建。'
-  $hint.Font = New-Object System.Drawing.Font('Microsoft YaHei', 12)
-  $hint.ForeColor = [System.Drawing.ColorTranslator]::FromHtml($script:Theme.Text)
-  $hint.AutoSize = $true
-  $hint.Location = New-Object System.Drawing.Point(24, 130)
-  $f.Controls.Add($hint)
+  $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+  $adminBadge = New-Object System.Windows.Forms.Label
+  $adminBadge.Text = if ($isAdmin) { '管理员模式: 已启用' } else { '普通模式（建议以管理员运行）' }
+  $adminBadge.Font = New-Object System.Drawing.Font('Microsoft YaHei', 9, [System.Drawing.FontStyle]::Bold)
+  $adminBadge.ForeColor = [System.Drawing.Color]::White
+  $adminBadge.Location = New-Object System.Drawing.Point(20, 54)
+  $adminBadge.AutoSize = $true
+  $banner.Controls.Add($adminBadge)
+
+  $diskInfo = New-Object System.Windows.Forms.Label
+  $diskInfo.Text = '磁盘信息加载中...'
+  $diskInfo.Font = New-Object System.Drawing.Font('Microsoft YaHei', 9)
+  $diskInfo.ForeColor = [System.Drawing.Color]::White
+  $diskInfo.Location = New-Object System.Drawing.Point(400, 12)
+  $diskInfo.AutoSize = $true
+  $banner.Controls.Add($diskInfo)
+
+  $diskBar = New-Object System.Windows.Forms.ProgressBar
+  $diskBar.Location = New-Object System.Drawing.Point(400, 44)
+  $diskBar.Size = New-Object System.Drawing.Size(320, 18)
+  $diskBar.Style = 'Continuous'
+  $banner.Controls.Add($diskBar)
+
+  $btnScan = New-Object System.Windows.Forms.Button
+  $btnScan.Text = '立即重新扫描'
+  $btnScan.BackColor = [System.Drawing.ColorTranslator]::FromHtml($script:Theme.Secondary)
+  $btnScan.ForeColor = [System.Drawing.Color]::White
+  $btnScan.FlatStyle = 'Flat'
+  $btnScan.Location = New-Object System.Drawing.Point(760, 12)
+  $btnScan.Size = New-Object System.Drawing.Size(110, 30)
+  $banner.Controls.Add($btnScan)
+
+  $btnClearCache = New-Object System.Windows.Forms.Button
+  $btnClearCache.Text = '清空扫描缓存'
+  $btnClearCache.BackColor = [System.Drawing.ColorTranslator]::FromHtml($script:Theme.Secondary)
+  $btnClearCache.ForeColor = [System.Drawing.Color]::White
+  $btnClearCache.FlatStyle = 'Flat'
+  $btnClearCache.Location = New-Object System.Drawing.Point(878, 12)
+  $btnClearCache.Size = New-Object System.Drawing.Size(110, 30)
+  $banner.Controls.Add($btnClearCache)
+
+  $btnCancelScan = New-Object System.Windows.Forms.Button
+  $btnCancelScan.Text = '取消扫描'
+  $btnCancelScan.BackColor = [System.Drawing.Color]::Gray
+  $btnCancelScan.ForeColor = [System.Drawing.Color]::White
+  $btnCancelScan.FlatStyle = 'Flat'
+  $btnCancelScan.Location = New-Object System.Drawing.Point(996, 12)
+  $btnCancelScan.Size = New-Object System.Drawing.Size(90, 30)
+  $btnCancelScan.Enabled = $false
+  $banner.Controls.Add($btnCancelScan)
+
+  # ============ 底部日志 ============
+  $logBox = New-Object System.Windows.Forms.RichTextBox
+  $logBox.Dock = 'Bottom'
+  $logBox.Height = 150
+  $logBox.ReadOnly = $true
+  $logBox.BackColor = [System.Drawing.Color]::White
+  $logBox.ForeColor = [System.Drawing.ColorTranslator]::FromHtml($script:Theme.Text)
+  $logBox.Font = New-Object System.Drawing.Font('Consolas', 9)
+  $logBox.BorderStyle = 'FixedSingle'
+
+  function Log-Line {
+    param([string]$Msg)
+    try {
+      $logBox.AppendText((Get-Date -Format 'HH:mm:ss') + '  ' + $Msg + "`r`n")
+      $logBox.SelectionStart = $logBox.TextLength
+      $logBox.ScrollToCaret()
+    } catch { }
+    Write-CleanLog $Msg
+  }
+
+  # ============ 主 TabControl ============
+  $tabs = New-Object System.Windows.Forms.TabControl
+  $tabs.Dock = 'Fill'
+
+  # ===== Tab1 缓存清理 =====
+  $tabClean = New-Object System.Windows.Forms.TabPage
+  $tabClean.Text = '缓存清理'
+  $tabClean.BackColor = [System.Drawing.ColorTranslator]::FromHtml($script:Theme.Bg)
+
+  # 底部操作条（先加入 Dock，占位）
+  $actionBar = New-Object System.Windows.Forms.Panel
+  $actionBar.Dock = 'Bottom'
+  $actionBar.Height = 96
+  $actionBar.BackColor = [System.Drawing.Color]::White
+
+  $totalLabel = New-Object System.Windows.Forms.Label
+  $totalLabel.Text = '合计可释放: 0 B'
+  $totalLabel.Font = New-Object System.Drawing.Font('Microsoft YaHei', 13, [System.Drawing.FontStyle]::Bold)
+  $totalLabel.ForeColor = [System.Drawing.ColorTranslator]::FromHtml($script:Theme.Primary)
+  $totalLabel.Location = New-Object System.Drawing.Point(14, 12)
+  $totalLabel.AutoSize = $true
+  $actionBar.Controls.Add($totalLabel)
+
+  $btnAll = New-Object System.Windows.Forms.Button
+  $btnAll.Text = '全选'
+  $btnAll.Location = New-Object System.Drawing.Point(12, 52)
+  $btnAll.Size = New-Object System.Drawing.Size(72, 30)
+  $actionBar.Controls.Add($btnAll)
+
+  $btnNone = New-Object System.Windows.Forms.Button
+  $btnNone.Text = '全不选'
+  $btnNone.Location = New-Object System.Drawing.Point(90, 52)
+  $btnNone.Size = New-Object System.Drawing.Size(72, 30)
+  $actionBar.Controls.Add($btnNone)
+
+  $btnLow = New-Object System.Windows.Forms.Button
+  $btnLow.Text = '仅低风险'
+  $btnLow.Location = New-Object System.Drawing.Point(168, 52)
+  $btnLow.Size = New-Object System.Drawing.Size(88, 30)
+  $actionBar.Controls.Add($btnLow)
+
+  $btnSafe = New-Object System.Windows.Forms.Button
+  $btnSafe.Text = '一键清理安全项'
+  $btnSafe.BackColor = [System.Drawing.ColorTranslator]::FromHtml($script:Theme.Green)
+  $btnSafe.ForeColor = [System.Drawing.Color]::White
+  $btnSafe.FlatStyle = 'Flat'
+  $btnSafe.Location = New-Object System.Drawing.Point(262, 52)
+  $btnSafe.Size = New-Object System.Drawing.Size(120, 30)
+  $actionBar.Controls.Add($btnSafe)
+
+  $rbRecycle = New-Object System.Windows.Forms.RadioButton
+  $rbRecycle.Text = '移到回收站 (可恢复)'
+  $rbRecycle.Checked = $true
+  $rbRecycle.Location = New-Object System.Drawing.Point(410, 14)
+  $rbRecycle.AutoSize = $true
+  $actionBar.Controls.Add($rbRecycle)
+
+  $rbPermanent = New-Object System.Windows.Forms.RadioButton
+  $rbPermanent.Text = '永久删除 (不可恢复)'
+  $rbPermanent.ForeColor = [System.Drawing.ColorTranslator]::FromHtml($script:Theme.Red)
+  $rbPermanent.Location = New-Object System.Drawing.Point(410, 42)
+  $rbPermanent.AutoSize = $true
+  $actionBar.Controls.Add($rbPermanent)
+
+  $btnClean = New-Object System.Windows.Forms.Button
+  $btnClean.Text = '开 始 清 理'
+  $btnClean.BackColor = [System.Drawing.ColorTranslator]::FromHtml($script:Theme.Primary)
+  $btnClean.ForeColor = [System.Drawing.Color]::White
+  $btnClean.Font = New-Object System.Drawing.Font('Microsoft YaHei', 12, [System.Drawing.FontStyle]::Bold)
+  $btnClean.FlatStyle = 'Flat'
+  $btnClean.Location = New-Object System.Drawing.Point(620, 16)
+  $btnClean.Size = New-Object System.Drawing.Size(140, 56)
+  $actionBar.Controls.Add($btnClean)
+
+  $btnCancelClean = New-Object System.Windows.Forms.Button
+  $btnCancelClean.Text = '取消'
+  $btnCancelClean.Location = New-Object System.Drawing.Point(768, 16)
+  $btnCancelClean.Size = New-Object System.Drawing.Size(70, 56)
+  $btnCancelClean.Enabled = $false
+  $actionBar.Controls.Add($btnCancelClean)
+
+  $cleanBar = New-Object System.Windows.Forms.ProgressBar
+  $cleanBar.Location = New-Object System.Drawing.Point(860, 22)
+  $cleanBar.Size = New-Object System.Drawing.Size(300, 16)
+  $actionBar.Controls.Add($cleanBar)
+
+  $cleanStatus = New-Object System.Windows.Forms.Label
+  $cleanStatus.Text = '就绪'
+  $cleanStatus.ForeColor = [System.Drawing.ColorTranslator]::FromHtml($script:Theme.Text)
+  $cleanStatus.Location = New-Object System.Drawing.Point(860, 46)
+  $cleanStatus.AutoSize = $true
+  $actionBar.Controls.Add($cleanStatus)
+
+  # 右侧详情面板
+  $detailPanel = New-Object System.Windows.Forms.Panel
+  $detailPanel.Dock = 'Right'
+  $detailPanel.Width = 260
+  $detailPanel.BackColor = [System.Drawing.Color]::White
+
+  $detailTitle = New-Object System.Windows.Forms.Label
+  $detailTitle.Text = '项目说明'
+  $detailTitle.Font = New-Object System.Drawing.Font('Microsoft YaHei', 11, [System.Drawing.FontStyle]::Bold)
+  $detailTitle.ForeColor = [System.Drawing.ColorTranslator]::FromHtml($script:Theme.Primary)
+  $detailTitle.Location = New-Object System.Drawing.Point(12, 10)
+  $detailTitle.AutoSize = $true
+  $detailPanel.Controls.Add($detailTitle)
+
+  $detailName = New-Object System.Windows.Forms.Label
+  $detailName.Text = '（选择左侧清理项）'
+  $detailName.Font = New-Object System.Drawing.Font('Microsoft YaHei', 10, [System.Drawing.FontStyle]::Bold)
+  $detailName.ForeColor = [System.Drawing.ColorTranslator]::FromHtml($script:Theme.Text)
+  $detailName.Location = New-Object System.Drawing.Point(12, 40)
+  $detailName.MaximumSize = New-Object System.Drawing.Size(236, 0)
+  $detailName.AutoSize = $true
+  $detailPanel.Controls.Add($detailName)
+
+  $detailRisk = New-Object System.Windows.Forms.Label
+  $detailRisk.Text = ''
+  $detailRisk.Font = New-Object System.Drawing.Font('Microsoft YaHei', 10, [System.Drawing.FontStyle]::Bold)
+  $detailRisk.Location = New-Object System.Drawing.Point(12, 68)
+  $detailRisk.AutoSize = $true
+  $detailPanel.Controls.Add($detailRisk)
+
+  $detailDesc = New-Object System.Windows.Forms.Label
+  $detailDesc.Text = ''
+  $detailDesc.ForeColor = [System.Drawing.ColorTranslator]::FromHtml($script:Theme.Text)
+  $detailDesc.Location = New-Object System.Drawing.Point(12, 96)
+  $detailDesc.MaximumSize = New-Object System.Drawing.Size(236, 0)
+  $detailDesc.AutoSize = $true
+  $detailPanel.Controls.Add($detailDesc)
+
+  $detailPath = New-Object System.Windows.Forms.Label
+  $detailPath.Text = ''
+  $detailPath.ForeColor = [System.Drawing.ColorTranslator]::FromHtml($script:Theme.Disabled)
+  $detailPath.Font = New-Object System.Drawing.Font('Consolas', 8)
+  $detailPath.Location = New-Object System.Drawing.Point(12, 190)
+  $detailPath.MaximumSize = New-Object System.Drawing.Size(236, 0)
+  $detailPath.AutoSize = $true
+  $detailPanel.Controls.Add($detailPath)
+
+  # 清理项列表（最后加入 Dock，占满剩余空间）
+  $listView = New-Object System.Windows.Forms.ListView
+  $listView.Dock = 'Fill'
+  $listView.View = 'Details'
+  $listView.CheckBoxes = $true
+  $listView.FullRowSelect = $true
+  $listView.GridLines = $true
+  $listView.HideSelection = $false
+  $listView.UseCompatibleStateImageBehavior = $false
+  $null = $listView.Columns.Add('名称', 300)
+  $null = $listView.Columns.Add('大小', 100)
+  $null = $listView.Columns.Add('风险', 80)
+  $null = $listView.Columns.Add('说明', 480)
+
+  $tabClean.Controls.Add($actionBar)
+  $tabClean.Controls.Add($detailPanel)
+  $tabClean.Controls.Add($listView)
+  $tabs.Controls.Add($tabClean)
+
+  # ===== Tab2-6 占位 =====
+  $tabs.Controls.Add((New-PlaceholderPage '大文件' '大文件分析：扫描全盘大于阈值的大文件，提供移盘/清理。将在后续版本提供。'))
+  $tabs.Controls.Add((New-PlaceholderPage '软件占用' '软件占用列表：读取注册表已安装软件与实际目录占用。将在后续版本提供。'))
+  $tabs.Controls.Add((New-PlaceholderPage '重复文件' '重复文件检测：按大小+哈希找出重复文件。将在后续版本提供。'))
+  $tabs.Controls.Add((New-PlaceholderPage '还原点' '系统还原点管理（创建/删除）。将在后续版本提供。'))
+  $tabs.Controls.Add((New-PlaceholderPage '启动项' '开机启动项查看与管理。将在后续版本提供。'))
+
+  $f.Controls.Add($banner)
+  $f.Controls.Add($logBox)
+  $f.Controls.Add($tabs)
+
+  # ============ 逻辑函数 ============
+  $suppressPrompt = $false
+
+  function Refresh-DiskInfo {
+    try {
+      $d = Get-PSDrive -Name 'C'
+      $used = [long]$d.Used; $free = [long]$d.Free; $total = $used + $free
+      $pct = if ($total -gt 0) { [int](100 * $used / $total) } else { 0 }
+      $diskInfo.Text = ('C盘: 已用 {0} / 可用 {1}   占用 {2}%' -f (Format-Bytes $used), (Format-Bytes $free), $pct)
+      $diskBar.Maximum = 100
+      $diskBar.Value = [Math]::Min(100, $pct)
+    } catch { }
+  }
+
+  function Update-Total {
+    $total = 0L
+    foreach ($li in $listView.Items) {
+      if ($li.Checked -and $li.Tag) { $total += [long]$li.Tag.Size }
+    }
+    $totalLabel.Text = '合计可释放: ' + (Format-Bytes $total)
+  }
+
+  # ===== 扫描 worker =====
+  $scanWorker = New-Object System.ComponentModel.BackgroundWorker
+  $scanWorker.WorkerReportsProgress = $true
+  $scanWorker.add_DoWork({
+    param($s, $e)
+    $items = Load-CleanupItems
+    $rows = New-Object System.Collections.Generic.List[object]
+    $n = 0
+    foreach ($it in $items) {
+      if ($s.CancellationPending) { $e.Cancel = $true; return }
+      $size = Get-ItemSize $it
+      $rows.Add([pscustomobject]@{ Item = $it; Size = $size })
+      $n++
+      $s.ReportProgress([int](100.0 * $n / $items.Count), $it.name)
+    }
+    $e.Result = @{ Rows = $rows }
+  })
+  $scanWorker.add_ProgressChanged({
+    param($s, $e)
+    $diskBar.Value = [Math]::Min(100, $e.ProgressPercentage)
+    $diskInfo.Text = ('扫描中... ' + [string]$e.UserState + '  (' + $e.ProgressPercentage + '%)')
+  })
+  $scanWorker.add_RunWorkerCompleted({
+    param($s, $e)
+    $btnScan.Enabled = $true
+    $btnCancelScan.Enabled = $false
+    if ($e.Cancelled) {
+      Log-Line '扫描已取消'
+      $diskInfo.Text = '扫描已取消'
+      return
+    }
+    $listView.BeginUpdate()
+    $listView.Items.Clear()
+    $listView.Groups.Clear()
+    $groups = @{}
+    foreach ($row in $e.Result.Rows) {
+      $it = $row.Item; $size = [long]$row.Size
+      $li = New-Object System.Windows.Forms.ListViewItem(@($it.name, (Format-Bytes $size), (Get-RiskText $it.risk), $it.desc))
+      $li.Tag = [pscustomobject]@{ Item = $it; Size = $size }
+      $li.ForeColor = [System.Drawing.ColorTranslator]::FromHtml((Get-RiskColor $it.risk))
+      $catKey = switch ($it.category) {
+        'system'  { '系统' }
+        'browser' { '浏览器' }
+        'dev'     { '开发工具' }
+        default   { '常用软件' }
+      }
+      if (-not $groups.ContainsKey($catKey)) {
+        $g = New-Object System.Windows.Forms.ListViewGroup($catKey)
+        $listView.Groups.Add($g)
+        $groups[$catKey] = $g
+      }
+      $li.Group = $groups[$catKey]
+      $li.Checked = [bool]$it.defaultChecked
+      $null = $listView.Items.Add($li)
+    }
+    $listView.EndUpdate()
+    Save-SizeCache
+    Update-Total
+    Refresh-DiskInfo
+    Log-Line ('扫描完成: 共 ' + $listView.Items.Count + ' 项清理目标')
+  })
+
+  function Start-Scan {
+    $btnScan.Enabled = $false
+    $btnCancelScan.Enabled = $true
+    $listView.Items.Clear()
+    $listView.Groups.Clear()
+    Update-Total
+    Log-Line '开始扫描清理项大小（未缓存项首次较慢）...'
+    $scanWorker.RunWorkerAsync()
+  }
+
+  # ===== 清理 worker =====
+  $cleanWorker = New-Object System.ComponentModel.BackgroundWorker
+  $cleanWorker.WorkerSupportsCancellation = $true
+  $cleanWorker.add_DoWork({
+    param($s, $e)
+    $arg = $e.Argument
+    $mode = $arg.Mode
+    $totalPlanned = 0L; $totalReleased = 0L; $skippedTotal = 0; $done = 0
+    foreach ($it in $arg.Items) {
+      if ($s.CancellationPending) { $e.Cancel = $true; break }
+      $planned = Get-ItemSize $it -Force
+      $r = Invoke-SafeDelete $it $mode
+      $totalPlanned += [long]$planned
+      $totalReleased += [long]$r.Released
+      $skippedTotal += [int]$r.Skipped
+      $done++
+      $s.ReportProgress([int](100.0 * $done / $arg.Items.Count), ('{0}  释放 {1}' -f $it.name, (Format-Bytes $r.Released)))
+    }
+    $e.Result = @{ Planned = $totalPlanned; Released = $totalReleased; Skipped = $skippedTotal }
+  })
+  $cleanWorker.add_ProgressChanged({
+    param($s, $e)
+    $cleanBar.Value = [Math]::Min(100, $e.ProgressPercentage)
+    $cleanStatus.Text = '清理中... ' + [string]$e.UserState
+    Log-Line ('清理: ' + [string]$e.UserState)
+  })
+  $cleanWorker.add_RunWorkerCompleted({
+    param($s, $e)
+    $cleanBar.Value = 0
+    $btnClean.Enabled = $true
+    $btnCancelClean.Enabled = $false
+    if ($e.Cancelled) {
+      $cleanStatus.Text = '已取消'
+      Log-Line '清理已取消（已完成部分保留）'
+    } else {
+      $res = $e.Result
+      $cleanStatus.Text = '清理完成'
+      Log-Line ('清理完成: 计划释放 ' + (Format-Bytes $res.Planned) + ' / 实际释放 ' + (Format-Bytes $res.Released) + ' / 跳过 ' + $res.Skipped)
+      try {
+        [System.Windows.Forms.MessageBox]::Show(
+          ('清理完成' + "`r`n`r`n计划释放: {0}`r`n实际释放: {1}`r`n跳过占用/受保护: {2}" -f (Format-Bytes $res.Planned), (Format-Bytes $res.Released), $res.Skipped),
+          '清理结果', 'OK', 'Information')
+      } catch { }
+    }
+    Refresh-DiskInfo
+    Update-Total
+  })
+
+  # ============ 事件 ============
+  $listView.add_ItemCheck({
+    param($s, $e)
+    if ($suppressPrompt) { return }
+    if ($e.NewValue -eq [System.Windows.Forms.CheckState]::Checked) {
+      $li = $listView.Items[$e.Index]
+      if ($li.Tag -and $li.Tag.Item.risk -eq 'red') {
+        $r = [System.Windows.Forms.MessageBox]::Show(('「' + $li.Text + '」风险较高，可能涉及个人数据。确定勾选清理吗？'), '风险确认', 'YesNo', 'Warning')
+        if ($r -ne 'Yes') { $e.NewValue = [System.Windows.Forms.CheckState]::Unchecked }
+      }
+    }
+  })
+  $listView.add_ItemChecked({ param($s, $e) Update-Total })
+  $listView.add_SelectedIndexChanged({
+    if ($listView.SelectedItems.Count -gt 0) {
+      $li = $listView.SelectedItems[0]
+      if ($li.Tag) {
+        $it = $li.Tag.Item
+        $detailName.Text = $it.name
+        $detailRisk.Text = '风险: ' + (Get-RiskText $it.risk)
+        $detailRisk.ForeColor = [System.Drawing.ColorTranslator]::FromHtml((Get-RiskColor $it.risk))
+        $detailDesc.Text = $it.desc
+        $detailPath.Text = ($it.paths -join "`r`n")
+      }
+    }
+  })
+
+  $btnScan.add_Click({ Start-Scan })
+  $btnClearCache.add_Click({
+    $script:SizeCache = @{}
+    $p = Join-Path $script:DataDir 'size-cache.json'
+    if (Test-Path $p) { Remove-Item -LiteralPath $p -Force -ErrorAction SilentlyContinue }
+    Log-Line '已清空扫描缓存，下次扫描全量实测'
+    Start-Scan
+  })
+  $btnCancelScan.add_Click({ $scanWorker.CancelAsync() })
+
+  $btnAll.add_Click({
+    $suppressPrompt = $true
+    try { foreach ($li in $listView.Items) { $li.Checked = $true } } finally { $suppressPrompt = $false }
+  })
+  $btnNone.add_Click({
+    $suppressPrompt = $true
+    try { foreach ($li in $listView.Items) { $li.Checked = $false } } finally { $suppressPrompt = $false }
+  })
+  $btnLow.add_Click({
+    $suppressPrompt = $true
+    try { foreach ($li in $listView.Items) { $li.Checked = ($li.Tag -and $li.Tag.Item.risk -eq 'green') } } finally { $suppressPrompt = $false }
+  })
+  $btnSafe.add_Click({
+    # 一键清理安全项 = 绿 + 黄（排除红）
+    $suppressPrompt = $true
+    try { foreach ($li in $listView.Items) { $li.Checked = ($li.Tag -and $li.Tag.Item.risk -ne 'red') } } finally { $suppressPrompt = $false }
+  })
+
+  $rbPermanent.add_CheckedChanged({
+    if ($rbPermanent.Checked) {
+      $script:Settings.DeleteMode = 'Permanent'
+      Save-Settings
+      try {
+        [System.Windows.Forms.MessageBox]::Show('你已切换到【永久删除】模式：清理后文件无法从回收站恢复，请谨慎操作！', '警告', 'OK', 'Warning')
+      } catch { }
+    } else {
+      $script:Settings.DeleteMode = 'Recycle'
+      Save-Settings
+    }
+  })
+
+  $btnClean.add_Click({
+    $checked = @($listView.Items | Where-Object { $_.Checked -and $_.Tag } | ForEach-Object { $_.Tag.Item })
+    if ($checked.Count -eq 0) {
+      try { [System.Windows.Forms.MessageBox]::Show('请先勾选要清理的项目。', '提示', 'OK', 'Information') } catch { }
+      return
+    }
+    $mode = if ($rbPermanent.Checked) { 'Permanent' } else { 'Recycle' }
+    if ($mode -eq 'Permanent') {
+      $r = [System.Windows.Forms.MessageBox]::Show('你选择了【永久删除】！文件将无法从回收站恢复。确认继续？', '危险操作', 'YesNo', 'Warning')
+      if ($r -ne 'Yes') { return }
+    }
+    $reds = @($checked | Where-Object { $_.risk -eq 'red' })
+    if ($reds.Count -gt 0) {
+      $names = ($reds | ForEach-Object { $_.name }) -join '、'
+      $r = [System.Windows.Forms.MessageBox]::Show(('以下高风险项将被清理（可能影响个人数据）：' + $names + "`r`n`r`n确认继续？"), '高风险确认', 'YesNo', 'Warning')
+      if ($r -ne 'Yes') { return }
+    }
+    $btnClean.Enabled = $false
+    $btnCancelClean.Enabled = $true
+    $cleanBar.Value = 0
+    $cleanStatus.Text = '清理中...'
+    $modeText = if ($mode -eq 'Permanent') { '永久删除' } else { '回收站' }
+    Log-Line ('开始清理: ' + $checked.Count + ' 项, 模式=' + $modeText)
+    $cleanWorker.RunWorkerAsync(@{ Items = $checked; Mode = $mode })
+  })
+  $btnCancelClean.add_Click({ $cleanWorker.CancelAsync() })
+
+  # 恢复上次删除模式
+  Load-Settings
+  if ($script:Settings.DeleteMode -eq 'Permanent') { $rbPermanent.Checked = $true }
+
+  $f.add_Shown({
+    Refresh-DiskInfo
+    Log-Line '工具已就绪。勾选要清理的项目后点击「开始清理」；删除默认进回收站可恢复。'
+    Start-Scan
+  })
 
   return $f
 }
