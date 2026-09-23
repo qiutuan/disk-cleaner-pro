@@ -203,6 +203,31 @@
     "execTimeoutSec": 120,
     "detect": { "type": "path-exists", "value": ["%APPDATA%\\Mozilla\\Firefox\\Profiles"] }
   },
+  {
+    "id": "browser_camoufox",
+    "category": "browser",
+    "name": "Camoufox 浏览器缓存",
+    "desc": "反检测 Firefox 内核浏览器的网页缓存（实测约 950MB），纯缓存可清",
+    "paths": ["%LOCALAPPDATA%\\camoufox\\camoufox\\Cache"],
+    "risk": "green",
+    "defaultChecked": false,
+    "method": "delete-dir",
+    "detect": { "type": "path-exists", "value": ["%LOCALAPPDATA%\\camoufox\\camoufox\\Cache"] }
+  },
+  {
+    "id": "browser_roxybrowser",
+    "category": "browser",
+    "name": "RoxyBrowser 指纹浏览器缓存",
+    "desc": "指纹浏览器的网页缓存目录（实测约 360MB），不含账号资料",
+    "paths": [
+      "%APPDATA%\\RoxyBrowser\\browser-cache",
+      "%APPDATA%\\RoxyBrowser\\Cache"
+    ],
+    "risk": "green",
+    "defaultChecked": false,
+    "method": "delete-dir",
+    "detect": { "type": "path-exists", "value": ["%APPDATA%\\RoxyBrowser"] }
+  },
 
   {
     "id": "dev_npm",
@@ -340,12 +365,48 @@
     "id": "dev_jetbrains_index",
     "category": "dev",
     "name": "JetBrains 索引缓存",
-    "desc": "IDE 本地索引与缓存，删除后打开项目会重建索引（变慢一次）",
-    "paths": ["%USERPROFILE%\\.cache\\JetBrains"],
+    "desc": "IDE 本地索引与缓存（实测约 2GB），删除后打开项目会重建索引（变慢一次）",
+    "paths": ["%LOCALAPPDATA%\\JetBrains\\*\\index"],
     "risk": "yellow",
     "defaultChecked": false,
     "method": "delete-dir",
-    "detect": { "type": "path-exists", "value": ["%USERPROFILE%\\.cache\\JetBrains"] }
+    "detect": { "type": "path-exists", "value": ["%LOCALAPPDATA%\\JetBrains"] }
+  },
+  {
+    "id": "dev_jetbrains_caches",
+    "category": "dev",
+    "name": "JetBrains 其它缓存",
+    "desc": "IDE 的 caches / jcef_cache / compile-server，删除后自动重建",
+    "paths": [
+      "%LOCALAPPDATA%\\JetBrains\\*\\caches",
+      "%LOCALAPPDATA%\\JetBrains\\*\\jcef_cache",
+      "%LOCALAPPDATA%\\JetBrains\\*\\compile-server"
+    ],
+    "risk": "green",
+    "defaultChecked": false,
+    "method": "delete-dir",
+    "detect": { "type": "path-exists", "value": ["%LOCALAPPDATA%\\JetBrains"] }
+  },
+  {
+    "id": "dev_updater_dirs",
+    "category": "dev",
+    "name": "软件更新安装包 (updater)",
+    "desc": "各软件 electron-updater 下载的旧版本安装包（实测约 4GB），纯垃圾可清",
+    "paths": ["%LOCALAPPDATA%\\*-updater"],
+    "risk": "green",
+    "defaultChecked": true,
+    "method": "delete-dir"
+  },
+  {
+    "id": "dev_vscode_vsix",
+    "category": "dev",
+    "name": "VSCode 扩展安装包缓存",
+    "desc": "VSCode 已安装扩展的 VSIX 安装包缓存（实测约 1.1GB），可重装故可清",
+    "paths": ["%APPDATA%\\Code\\CachedExtensionVSIXs"],
+    "risk": "green",
+    "defaultChecked": true,
+    "method": "delete-dir",
+    "detect": { "type": "path-exists", "value": ["%APPDATA%\\Code\\CachedExtensionVSIXs"] }
   },
   {
     "id": "dev_vscode",
@@ -486,5 +547,52 @@
     "defaultChecked": false,
     "method": "delete-dir",
     "detect": { "type": "path-exists", "value": ["%LOCALAPPDATA%\\NVIDIA\\DXCache"] }
+  },
+  {
+    "id": "app_baidu_tmp",
+    "category": "app",
+    "name": "百度网盘临时文件",
+    "desc": "百度网盘残留的 *.tmp.* 临时文件（实测约 60MB，60+ 个）",
+    "paths": ["%APPDATA%\\baidunetdisk\\*.tmp.*"],
+    "risk": "green",
+    "defaultChecked": false,
+    "method": "delete-file",
+    "detect": { "type": "path-exists", "value": ["%APPDATA%\\baidunetdisk"] }
+  },
+  {
+    "id": "app_adrive",
+    "category": "app",
+    "name": "阿里云盘缓存",
+    "desc": "阿里云盘 aDrive 网页缓存与分区缓存（实测约 400MB），纯缓存可清",
+    "paths": [
+      "%APPDATA%\\aDrive\\Cache",
+      "%APPDATA%\\aDrive\\Partitions"
+    ],
+    "risk": "green",
+    "defaultChecked": false,
+    "method": "delete-dir",
+    "detect": { "type": "path-exists", "value": ["%APPDATA%\\aDrive"] }
+  },
+  {
+    "id": "app_xwechat_log",
+    "category": "app",
+    "name": "微信4.0 日志",
+    "desc": "微信4.0 (xwechat) 运行日志（实测约 420MB），不含聊天记录",
+    "paths": ["%APPDATA%\\Tencent\\xwechat\\log"],
+    "risk": "green",
+    "defaultChecked": false,
+    "method": "delete-dir",
+    "detect": { "type": "path-exists", "value": ["%APPDATA%\\Tencent\\xwechat\\log"] }
+  },
+  {
+    "id": "app_ebwebview",
+    "category": "app",
+    "name": "WebView2 缓存 (EBWebView)",
+    "desc": "系统级 WebView2 共用缓存（实测约 77MB），纯缓存可清",
+    "paths": ["%LOCALAPPDATA%\\EBWebView"],
+    "risk": "green",
+    "defaultChecked": false,
+    "method": "delete-dir",
+    "detect": { "type": "path-exists", "value": ["%LOCALAPPDATA%\\EBWebView"] }
   }
 ]
