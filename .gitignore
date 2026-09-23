@@ -1,0 +1,15 @@
+# 运行时数据（工具生成，不入库）
+runtime/
+
+# 自测临时数据
+testdata/
+
+# 日志
+*.log
+
+# 系统/编辑器
+Thumbs.db
+Desktop.ini
+.vs/
+.idea/
+*.user
