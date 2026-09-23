@@ -9,6 +9,8 @@
 4. **手动触发**，不做任何定时任务/开机自启
 5. **写入边界（最重要）**：所有执行只允许在 G:\work\myOuther\clear\ 内写/改，
    其余文件系统一律只读（包括 %LOCALAPPDATA%、Temp、memory 等）——运行时数据、日志、自测全在 clear 内
+6. **自测禁止删真实文件**：步骤6 自测环节不允许删除电脑上任何真实文件；
+   真实文件只做扫描预览(DryRun)；删除逻辑验证仅在 clear\testdata\ 内自建数据上做（用完清理）
 
 ## 清理偏好（重要）
 - **开发包缓存默认不删**：npm/yarn/pnpm/uv/pip/go-build/.m2/.gradle/.nuget/.cargo 等

@@ -1,0 +1,490 @@
+[
+  {
+    "id": "sys_tmp_user",
+    "category": "system",
+    "name": "用户临时文件",
+    "desc": "Windows 和应用程序产生的临时文件，可安全删除；正在使用的文件会自动跳过",
+    "paths": ["%LOCALAPPDATA%\\Temp"],
+    "risk": "green",
+    "defaultChecked": true,
+    "method": "delete-dir"
+  },
+  {
+    "id": "sys_tmp_win",
+    "category": "system",
+    "name": "Windows 临时文件",
+    "desc": "系统临时文件夹，可安全删除，占用自动跳过",
+    "paths": ["%WINDIR%\\Temp"],
+    "risk": "green",
+    "defaultChecked": true,
+    "method": "delete-dir"
+  },
+  {
+    "id": "sys_thumb",
+    "category": "system",
+    "name": "缩略图缓存",
+    "desc": "资源管理器缩略图缓存，自动重建，无副作用",
+    "paths": ["%LOCALAPPDATA%\\Microsoft\\Windows\\Explorer\\thumbcache_*.db"],
+    "risk": "green",
+    "defaultChecked": true,
+    "method": "delete-file"
+  },
+  {
+    "id": "sys_inetcache",
+    "category": "system",
+    "name": "Internet 临时文件",
+    "desc": "系统网络缓存，可安全删除",
+    "paths": ["%LOCALAPPDATA%\\Microsoft\\Windows\\INetCache"],
+    "risk": "green",
+    "defaultChecked": true,
+    "method": "delete-dir"
+  },
+  {
+    "id": "sys_wer",
+    "category": "system",
+    "name": "Windows 错误报告",
+    "desc": "错误报告与故障转储，仅用于诊断，可安全删除",
+    "paths": ["%ProgramData%\\Microsoft\\Windows\\WER"],
+    "risk": "green",
+    "defaultChecked": true,
+    "method": "delete-dir"
+  },
+  {
+    "id": "sys_crashdump",
+    "category": "system",
+    "name": "应用程序崩溃转储",
+    "desc": "应用崩溃生成的转储文件（可能很大），不影响系统",
+    "paths": ["%LOCALAPPDATA%\\CrashDumps"],
+    "risk": "green",
+    "defaultChecked": true,
+    "method": "delete-dir"
+  },
+  {
+    "id": "sys_livekernel",
+    "category": "system",
+    "name": "内核实时转储",
+    "desc": "内核实时转储文件，仅用于诊断",
+    "paths": ["%WINDIR%\\LiveKernelReports"],
+    "risk": "green",
+    "defaultChecked": false,
+    "method": "delete-dir"
+  },
+  {
+    "id": "sys_minidump",
+    "category": "system",
+    "name": "小内存转储",
+    "desc": "蓝屏/内核崩溃的小内存转储",
+    "paths": ["%WINDIR%\\Minidump"],
+    "risk": "green",
+    "defaultChecked": false,
+    "method": "delete-dir",
+    "detect": { "type": "path-exists", "value": ["%WINDIR%\\Minidump"] }
+  },
+  {
+    "id": "sys_prefetch",
+    "category": "system",
+    "name": "预取缓存",
+    "desc": "程序启动加速的预取数据，删除后系统会重建，仅略增启动时间",
+    "paths": ["%WINDIR%\\Prefetch"],
+    "risk": "yellow",
+    "defaultChecked": false,
+    "method": "delete-dir"
+  },
+  {
+    "id": "sys_wu_download",
+    "category": "system",
+    "name": "Windows 更新下载缓存",
+    "desc": "已下载的系统更新安装包，删除后更新会重新下载；磁盘紧张时勾选",
+    "paths": ["%WINDIR%\\SoftwareDistribution\\Download"],
+    "risk": "yellow",
+    "defaultChecked": false,
+    "method": "delete-dir"
+  },
+  {
+    "id": "sys_deliveryopt",
+    "category": "system",
+    "name": "传递优化缓存",
+    "desc": "系统更新点对点分发缓存，可安全删除",
+    "paths": ["%ProgramData%\\Microsoft\\Windows\\DeliveryOptimization\\Cache"],
+    "risk": "yellow",
+    "defaultChecked": false,
+    "method": "delete-dir"
+  },
+  {
+    "id": "sys_recyclebin",
+    "category": "system",
+    "name": "清空回收站",
+    "desc": "永久删除回收站中的全部文件，无法再恢复，请确认回收站中没有想保留的内容",
+    "paths": [],
+    "risk": "yellow",
+    "defaultChecked": false,
+    "method": "exec",
+    "execCommand": "Clear-RecycleBin -Force -ErrorAction SilentlyContinue",
+    "execTimeoutSec": 120
+  },
+  {
+    "id": "sys_eventlogs",
+    "category": "system",
+    "name": "事件日志",
+    "desc": "系统与应用事件日志，删除后不再可查，通常价值有限",
+    "paths": [],
+    "risk": "yellow",
+    "defaultChecked": false,
+    "method": "exec",
+    "execCommand": "Get-WinEvent -ListLog * | ForEach-Object { try { [System.Diagnostics.Eventing.Reader.EventLogSession]::GlobalSession.ClearLog($_.LogName) } catch {} }",
+    "execTimeoutSec": 120,
+    "admin": true
+  },
+  {
+    "id": "sys_winsxs",
+    "category": "system",
+    "name": "Windows 组件清理 (DISM)",
+    "desc": "清理 WinSxS 组件存储中的过期更新组件，需要数分钟，请耐心等待",
+    "paths": [],
+    "risk": "yellow",
+    "defaultChecked": false,
+    "method": "exec",
+    "execCommand": "DISM /Online /Cleanup-Image /StartComponentCleanup /Quiet",
+    "execTimeoutSec": 600,
+    "admin": true
+  },
+  {
+    "id": "sys_oldwindows",
+    "category": "system",
+    "name": "旧版 Windows.old",
+    "desc": "系统升级前的旧系统文件（不可恢复），确认不再需要回退时删除",
+    "paths": ["%SystemDrive%\\Windows.old"],
+    "risk": "red",
+    "defaultChecked": false,
+    "method": "delete-dir",
+    "detect": { "type": "path-exists", "value": ["%SystemDrive%\\Windows.old"] }
+  },
+
+  {
+    "id": "browser_edge",
+    "category": "browser",
+    "name": "Edge 浏览器缓存",
+    "desc": "网页缓存与图形缓存，不影响书签/密码/登录状态",
+    "paths": [
+      "%LOCALAPPDATA%\\Microsoft\\Edge\\User Data\\Default\\Cache",
+      "%LOCALAPPDATA%\\Microsoft\\Edge\\User Data\\Default\\Code Cache",
+      "%LOCALAPPDATA%\\Microsoft\\Edge\\User Data\\Default\\GPUCache"
+    ],
+    "risk": "green",
+    "defaultChecked": true,
+    "method": "delete-dir",
+    "detect": { "type": "path-exists", "value": ["%LOCALAPPDATA%\\Microsoft\\Edge"] }
+  },
+  {
+    "id": "browser_chrome",
+    "category": "browser",
+    "name": "Chrome 浏览器缓存",
+    "desc": "网页缓存与图形缓存，不影响书签/密码/登录状态",
+    "paths": [
+      "%LOCALAPPDATA%\\Google\\Chrome\\User Data\\Default\\Cache",
+      "%LOCALAPPDATA%\\Google\\Chrome\\User Data\\Default\\Code Cache",
+      "%LOCALAPPDATA%\\Google\\Chrome\\User Data\\Default\\GPUCache"
+    ],
+    "risk": "green",
+    "defaultChecked": true,
+    "method": "delete-dir",
+    "detect": { "type": "path-exists", "value": ["%LOCALAPPDATA%\\Google\\Chrome"] }
+  },
+  {
+    "id": "browser_firefox",
+    "category": "browser",
+    "name": "Firefox 浏览器缓存",
+    "desc": "Firefox 配置目录下的缓存文件夹（不影响书签/密码/登录状态）",
+    "paths": [],
+    "risk": "green",
+    "defaultChecked": false,
+    "method": "exec",
+    "execCommand": "$p = Join-Path $env:APPDATA 'Mozilla\\Firefox\\Profiles'; if (Test-Path $p) { Get-ChildItem $p -Directory | ForEach-Object { $c = Join-Path $_.FullName 'cache2'; if (Test-Path $c) { Remove-Item -LiteralPath $c -Recurse -Force -ErrorAction SilentlyContinue } } }",
+    "execTimeoutSec": 120,
+    "detect": { "type": "path-exists", "value": ["%APPDATA%\\Mozilla\\Firefox\\Profiles"] }
+  },
+
+  {
+    "id": "dev_npm",
+    "category": "dev",
+    "name": "npm 缓存",
+    "desc": "npm 包下载缓存，删除后再次安装需重新下载",
+    "paths": ["%LOCALAPPDATA%\\npm-cache"],
+    "risk": "yellow",
+    "defaultChecked": false,
+    "method": "delete-dir",
+    "detect": { "type": "path-exists", "value": ["%LOCALAPPDATA%\\npm-cache"] }
+  },
+  {
+    "id": "dev_yarn",
+    "category": "dev",
+    "name": "yarn 缓存",
+    "desc": "yarn 包缓存，删除后再次安装需重新下载",
+    "paths": ["%LOCALAPPDATA%\\Yarn\\Cache"],
+    "risk": "yellow",
+    "defaultChecked": false,
+    "method": "delete-dir",
+    "detect": { "type": "path-exists", "value": ["%LOCALAPPDATA%\\Yarn\\Cache"] }
+  },
+  {
+    "id": "dev_pnpm",
+    "category": "dev",
+    "name": "pnpm 缓存",
+    "desc": "pnpm 全局存储，删除后再次安装需重新下载",
+    "paths": ["%LOCALAPPDATA%\\pnpm\\store"],
+    "risk": "yellow",
+    "defaultChecked": false,
+    "method": "delete-dir",
+    "detect": { "type": "path-exists", "value": ["%LOCALAPPDATA%\\pnpm\\store"] }
+  },
+  {
+    "id": "dev_uv",
+    "category": "dev",
+    "name": "uv 缓存",
+    "desc": "uv（Python 包管理）缓存，删除后再次安装需重新下载",
+    "paths": ["%LOCALAPPDATA%\\uv\\cache"],
+    "risk": "yellow",
+    "defaultChecked": false,
+    "method": "delete-dir",
+    "detect": { "type": "path-exists", "value": ["%LOCALAPPDATA%\\uv\\cache"] }
+  },
+  {
+    "id": "dev_pip",
+    "category": "dev",
+    "name": "pip 缓存",
+    "desc": "pip 下载缓存，删除后再次安装需重新下载",
+    "paths": ["%LOCALAPPDATA%\\pip\\cache"],
+    "risk": "yellow",
+    "defaultChecked": false,
+    "method": "delete-dir",
+    "detect": { "type": "path-exists", "value": ["%LOCALAPPDATA%\\pip\\cache"] }
+  },
+  {
+    "id": "dev_go",
+    "category": "dev",
+    "name": "Go 构建缓存",
+    "desc": "Go 编译中间产物，删除后重新编译会稍慢，不影响源码",
+    "paths": ["%LOCALAPPDATA%\\go-build"],
+    "risk": "yellow",
+    "defaultChecked": false,
+    "method": "delete-dir",
+    "detect": { "type": "path-exists", "value": ["%LOCALAPPDATA%\\go-build"] }
+  },
+  {
+    "id": "dev_maven",
+    "category": "dev",
+    "name": "Maven 仓库缓存",
+    "desc": "Maven 本地依赖库，删除后项目需重新下载依赖",
+    "paths": ["%USERPROFILE%\\.m2\\repository"],
+    "risk": "yellow",
+    "defaultChecked": false,
+    "method": "delete-dir",
+    "detect": { "type": "path-exists", "value": ["%USERPROFILE%\\.m2\\repository"] }
+  },
+  {
+    "id": "dev_gradle",
+    "category": "dev",
+    "name": "Gradle 缓存",
+    "desc": "Gradle 依赖与构建缓存，删除后重新构建需重新下载",
+    "paths": ["%USERPROFILE%\\.gradle\\caches"],
+    "risk": "yellow",
+    "defaultChecked": false,
+    "method": "delete-dir",
+    "detect": { "type": "path-exists", "value": ["%USERPROFILE%\\.gradle\\caches"] }
+  },
+  {
+    "id": "dev_nuget",
+    "category": "dev",
+    "name": "NuGet 包缓存",
+    "desc": "NuGet 离线包缓存，删除后需重新下载",
+    "paths": ["%USERPROFILE%\\.nuget\\packages"],
+    "risk": "yellow",
+    "defaultChecked": false,
+    "method": "delete-dir",
+    "detect": { "type": "path-exists", "value": ["%USERPROFILE%\\.nuget\\packages"] }
+  },
+  {
+    "id": "dev_cargo",
+    "category": "dev",
+    "name": "Cargo 注册表缓存",
+    "desc": "Rust Cargo 依赖缓存，删除后需重新下载",
+    "paths": ["%USERPROFILE%\\.cargo\\registry"],
+    "risk": "yellow",
+    "defaultChecked": false,
+    "method": "delete-dir",
+    "detect": { "type": "path-exists", "value": ["%USERPROFILE%\\.cargo\\registry"] }
+  },
+  {
+    "id": "dev_playwright",
+    "category": "dev",
+    "name": "Playwright 浏览器",
+    "desc": "自动化测试用浏览器二进制（每个约几百 MB），删除后需重新安装",
+    "paths": ["%LOCALAPPDATA%\\ms-playwright"],
+    "risk": "red",
+    "defaultChecked": false,
+    "method": "delete-dir",
+    "detect": { "type": "path-exists", "value": ["%LOCALAPPDATA%\\ms-playwright"] }
+  },
+  {
+    "id": "dev_jetbrains",
+    "category": "dev",
+    "name": "JetBrains 日志",
+    "desc": "JetBrains IDE（PyCharm/IDEA）日志目录，可安全删除，不含索引数据",
+    "paths": ["%LOCALAPPDATA%\\JetBrains\\*\log"],
+    "risk": "green",
+    "defaultChecked": false,
+    "method": "delete-dir",
+    "detect": { "type": "path-exists", "value": ["%LOCALAPPDATA%\\JetBrains"] }
+  },
+  {
+    "id": "dev_jetbrains_index",
+    "category": "dev",
+    "name": "JetBrains 索引缓存",
+    "desc": "IDE 本地索引与缓存，删除后打开项目会重建索引（变慢一次）",
+    "paths": ["%USERPROFILE%\\.cache\\JetBrains"],
+    "risk": "yellow",
+    "defaultChecked": false,
+    "method": "delete-dir",
+    "detect": { "type": "path-exists", "value": ["%USERPROFILE%\\.cache\\JetBrains"] }
+  },
+  {
+    "id": "dev_vscode",
+    "category": "dev",
+    "name": "VSCode 缓存",
+    "desc": "VSCode 代码缓存与日志，不影响扩展和配置",
+    "paths": [
+      "%APPDATA%\\Code\\Cache",
+      "%APPDATA%\\Code\\CachedData",
+      "%APPDATA%\\Code\\logs"
+    ],
+    "risk": "green",
+    "defaultChecked": false,
+    "method": "delete-dir",
+    "detect": { "type": "path-exists", "value": ["%APPDATA%\\Code"] }
+  },
+  {
+    "id": "dev_docker",
+    "category": "dev",
+    "name": "Docker 无用镜像/构建缓存",
+    "desc": "悬空镜像、构建缓存与无用卷（docker system prune），运行中的容器不受影响",
+    "paths": [],
+    "risk": "yellow",
+    "defaultChecked": false,
+    "method": "exec",
+    "execCommand": "docker system prune -af --volumes",
+    "execTimeoutSec": 300,
+    "admin": true,
+    "detect": { "type": "command-exists", "value": ["docker"] }
+  },
+
+  {
+    "id": "app_wechat",
+    "category": "app",
+    "name": "微信文件与缓存",
+    "desc": "微信聊天记录、图片、视频与缓存（可能含重要数据），除非确认否则不要勾选",
+    "paths": ["%USERPROFILE%\\Documents\\WeChat Files"],
+    "risk": "red",
+    "defaultChecked": false,
+    "method": "delete-dir",
+    "detect": { "type": "path-exists", "value": ["%USERPROFILE%\\Documents\\WeChat Files"] }
+  },
+  {
+    "id": "app_qq",
+    "category": "app",
+    "name": "QQ 文件与缓存",
+    "desc": "QQ 聊天记录、文件与缓存（可能含重要数据），除非确认否则不要勾选",
+    "paths": ["%USERPROFILE%\\Documents\\Tencent Files"],
+    "risk": "red",
+    "defaultChecked": false,
+    "method": "delete-dir",
+    "detect": { "type": "path-exists", "value": ["%USERPROFILE%\\Documents\\Tencent Files"] }
+  },
+  {
+    "id": "app_wechat_devtools",
+    "category": "app",
+    "name": "微信开发者工具缓存",
+    "desc": "微信开发者工具本地缓存，删除后部分资源需重新加载",
+    "paths": ["%LOCALAPPDATA%\\微信开发者工具"],
+    "risk": "yellow",
+    "defaultChecked": false,
+    "method": "delete-dir",
+    "detect": { "type": "path-exists", "value": ["%LOCALAPPDATA%\\微信开发者工具"] }
+  },
+  {
+    "id": "app_utools",
+    "category": "app",
+    "name": "uTools 数据缓存",
+    "desc": "uTools 插件与数据（可能含个人配置），谨慎勾选",
+    "paths": ["%LOCALAPPDATA%\\Programs\\utools"],
+    "risk": "yellow",
+    "defaultChecked": false,
+    "method": "delete-dir",
+    "detect": { "type": "path-exists", "value": ["%LOCALAPPDATA%\\Programs\\utools"] }
+  },
+  {
+    "id": "app_jianying",
+    "category": "app",
+    "name": "剪映缓存",
+    "desc": "剪映草稿与缓存（可能含未导出草稿），谨慎勾选",
+    "paths": ["%LOCALAPPDATA%\\JianyingPro"],
+    "risk": "red",
+    "defaultChecked": false,
+    "method": "delete-dir",
+    "detect": { "type": "path-exists", "value": ["%LOCALAPPDATA%\\JianyingPro"] }
+  },
+  {
+    "id": "app_wps",
+    "category": "app",
+    "name": "WPS 缓存",
+    "desc": "WPS Office 缓存与临时文件",
+    "paths": ["%LOCALAPPDATA%\\Kingsoft"],
+    "risk": "yellow",
+    "defaultChecked": false,
+    "method": "delete-dir",
+    "detect": { "type": "path-exists", "value": ["%LOCALAPPDATA%\\Kingsoft"] }
+  },
+  {
+    "id": "app_netease",
+    "category": "app",
+    "name": "网易云音乐缓存",
+    "desc": "网易云音乐歌曲缓存（离线歌曲删除后需重新缓存）",
+    "paths": ["%APPDATA%\\NetEase\\CloudMusic\\Cache"],
+    "risk": "yellow",
+    "defaultChecked": false,
+    "method": "delete-dir",
+    "detect": { "type": "path-exists", "value": ["%APPDATA%\\NetEase\\CloudMusic\\Cache"] }
+  },
+  {
+    "id": "app_dingtalk",
+    "category": "app",
+    "name": "钉钉缓存",
+    "desc": "钉钉消息/图片缓存",
+    "paths": ["%APPDATA%\\DingTalk"],
+    "risk": "yellow",
+    "defaultChecked": false,
+    "method": "delete-dir",
+    "detect": { "type": "path-exists", "value": ["%APPDATA%\\DingTalk"] }
+  },
+  {
+    "id": "app_baidu",
+    "category": "app",
+    "name": "百度网盘缓存",
+    "desc": "百度网盘下载缓存与临时文件",
+    "paths": ["%APPDATA%\\baidu\\BaiduNetdisk"],
+    "risk": "yellow",
+    "defaultChecked": false,
+    "method": "delete-dir",
+    "detect": { "type": "path-exists", "value": ["%APPDATA%\\baidu\\BaiduNetdisk"] }
+  },
+  {
+    "id": "app_nvidia_dxcache",
+    "category": "app",
+    "name": "NVIDIA 着色器缓存",
+    "desc": "NVIDIA 着色器编译缓存，删除后游戏首次启动会重新编译（卡顿一次）",
+    "paths": ["%LOCALAPPDATA%\\NVIDIA\\DXCache"],
+    "risk": "yellow",
+    "defaultChecked": false,
+    "method": "delete-dir",
+    "detect": { "type": "path-exists", "value": ["%LOCALAPPDATA%\\NVIDIA\\DXCache"] }
+  }
+]
