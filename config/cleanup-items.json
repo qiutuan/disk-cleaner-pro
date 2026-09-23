@@ -330,7 +330,7 @@
     "category": "dev",
     "name": "JetBrains 日志",
     "desc": "JetBrains IDE（PyCharm/IDEA）日志目录，可安全删除，不含索引数据",
-    "paths": ["%LOCALAPPDATA%\\JetBrains\\*\log"],
+    "paths": ["%LOCALAPPDATA%\\JetBrains\\*\\log"],
     "risk": "green",
     "defaultChecked": false,
     "method": "delete-dir",
