@@ -76,17 +76,45 @@ function Expand-EnvPath {
 }
 
 function Get-ExpandedPaths {
+  # 支持多级通配符：%LOCALAPPDATA%\JetBrains\*\log → 逐段展开存在的子目录
   param([string]$Raw)
   $expanded = Expand-EnvPath $Raw
   if (-not $expanded) { return @() }
-  if ($expanded -match '[\*\?]') {
-    $parent = Split-Path $expanded -Parent
-    $leaf   = Split-Path $expanded -Leaf
-    if (-not (Test-Path -LiteralPath $parent)) { return @() }
-    return @(Get-ChildItem -LiteralPath $parent -Force -ErrorAction SilentlyContinue |
-      Where-Object { $_.Name -like $leaf } | ForEach-Object { $_.FullName })
+  if ($expanded -notmatch '[\*\?]') { return @($expanded) }
+
+  $trimmed = $expanded.TrimEnd('\')
+  $parts = $trimmed -split '[\\/]' | Where-Object { $_ -ne '' }
+  # 找不含通配符的最长字面前缀作为起点
+  $base = ''; $restIdx = $parts.Count
+  for ($i = 0; $i -lt $parts.Count; $i++) {
+    if ($parts[$i] -match '[\*\?]') { $restIdx = $i; break }
+    if ($base -eq '') {
+      $base = if ($parts[$i] -match '^[A-Za-z]:$') { $parts[$i] + '\' } else { $parts[$i] }
+    } else {
+      $base = Join-Path $base $parts[$i]
+    }
   }
-  return @($expanded)
+  if ($restIdx -ge $parts.Count) { return @($base) }
+  if (-not (Test-Path -LiteralPath $base)) { return @() }
+  $rest = $parts[$restIdx..($parts.Count - 1)]
+
+  function Expand-GlobRec {
+    param([string]$B, [string[]]$S, [int]$i)
+    $out = @()
+    if ($i -ge $S.Count) { return @($B) }
+    $seg = $S[$i]
+    if ($seg -match '[\*\?]') {
+      foreach ($c in (Get-ChildItem -LiteralPath $B -Force -ErrorAction SilentlyContinue)) {
+        if ($c.Name -like $seg) { $out += Expand-GlobRec (Join-Path $B $c.Name) $S ($i + 1) }
+      }
+    } else {
+      $nxt = Join-Path $B $seg
+      if (Test-Path -LiteralPath $nxt) { $out += Expand-GlobRec $nxt $S ($i + 1) }
+    }
+    return $out
+  }
+  $result = @(Expand-GlobRec $base $rest 0 | Where-Object { $_ })
+  return , $result   # 逗号包裹防止单元素被解包成标量，保证 .Count/foreach 始终可用
 }
 #endregion
 
@@ -462,7 +490,22 @@ function Run-SelfTest {
   Assert-True (-not (Test-Path -LiteralPath (Join-Path $wf 'thumbcache_a.db'))) '通配符文件已删'
   Assert-True (Test-Path -LiteralPath (Join-Path $wf 'keep.txt')) '非匹配文件保留'
 
-  Write-Host '[7] 清理测试数据'
+  Write-Host '[7] 多级通配符展开'
+  $jb = Join-Path $td 'jb'
+  foreach ($ide in 'IDEA', 'PyCharm') {
+    New-Item -ItemType Directory -Force -Path (Join-Path $jb (Join-Path $ide 'log')) | Out-Null
+  }
+  $g1 = Get-ExpandedPaths (Join-Path $jb '*')
+  Assert-True ($g1.Count -eq 2) ("一级通配符 2 项 (实测 " + $g1.Count + ")")
+  $g2 = Get-ExpandedPaths (Join-Path $jb '*\log')
+  Assert-True ($g2.Count -eq 2) ("二级通配符 2 项 (实测 " + $g2.Count + ")")
+  $up = Join-Path $td 'up'
+  New-Item -ItemType Directory -Force -Path (Join-Path $up 'utools-updater') | Out-Null
+  New-Item -ItemType Directory -Force -Path (Join-Path $up 'keepdir') | Out-Null
+  $g3 = Get-ExpandedPaths (Join-Path $up '*-updater')
+  Assert-True ($g3.Count -eq 1) ("尾段通配符 1 项 (实测 " + $g3.Count + ")")
+
+  Write-Host '[8] 清理测试数据'
   if (Test-Path $td) { Remove-Item -LiteralPath $td -Recurse -Force -ErrorAction SilentlyContinue }
 
   Write-Host ('== 结果: PASS=' + $script:Pass + '  FAIL=' + $script:Fail + ' ==')
