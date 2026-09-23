@@ -1579,6 +1579,11 @@ function New-MainWindow {
     param($s, $e)
     $btnScan.Enabled = $true
     $btnCancelScan.Enabled = $false
+    if ($e.Error) {
+      $diskInfo.Text = '扫描出错'
+      Log-Line ('扫描出错: ' + $e.Error.Message)
+      return
+    }
     if ($e.Cancelled) {
       Log-Line '扫描已取消'
       $diskInfo.Text = '扫描已取消'
@@ -1656,6 +1661,11 @@ function New-MainWindow {
     $cleanBar.Value = 0
     $btnClean.Enabled = $true
     $btnCancelClean.Enabled = $false
+    if ($e.Error) {
+      $cleanStatus.Text = '清理出错'
+      Log-Line ('清理出错: ' + $e.Error.Message)
+      return
+    }
     if ($e.Cancelled) {
       $cleanStatus.Text = '已取消'
       Log-Line '清理已取消（已完成部分保留）'
