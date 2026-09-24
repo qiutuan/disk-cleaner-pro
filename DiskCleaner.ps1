@@ -1445,13 +1445,16 @@ function New-LargeFilesPage {
     }
     $r = [System.Windows.Forms.MessageBox]::Show(('确定将选中的 {0} 个大文件删除到回收站？' -f $sel.Count), '确认删除', 'YesNo', 'Warning')
     if ($r -ne 'Yes') { return }
-    $rel = 0L; $ok = 0
-    foreach ($it in $sel) {
+    $rel = 0L; $ok = 0; $doneRows = @()
+    foreach ($li in @($script:LvLarge.SelectedItems)) {
+      $it = $li.Tag
+      # 以"删除前存在且删除后不存在"判定成功；失败的行保留在列表中，文件也在
+      $existed = Test-Path -LiteralPath $it.Path
       $b = Remove-UserPathToRecycle $it.Path
-      if ($b -gt 0) { $ok++; $rel += $b }
+      if ($existed -and -not (Test-Path -LiteralPath $it.Path)) { $ok++; $rel += $b; $doneRows += $li }
     }
     Log-Line ('大文件删除: 成功 {0}/{1}, 释放 {2}' -f $ok, $sel.Count, (Format-Bytes $rel))
-    foreach ($li in @($script:LvLarge.SelectedItems)) { $script:LvLarge.Items.Remove($li) }
+    foreach ($li in $doneRows) { $script:LvLarge.Items.Remove($li) }
     $totalBytes = 0L
     foreach ($li2 in $script:LvLarge.Items) { if ($li2.Tag) { $totalBytes += [long]$li2.Tag.Size } }
     $script:LblLTotal.Text = ('共 {0} 个文件 / {1}' -f $script:LvLarge.Items.Count, (Format-Bytes $totalBytes))
