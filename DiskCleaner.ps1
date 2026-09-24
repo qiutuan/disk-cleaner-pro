@@ -1231,9 +1231,12 @@ function New-SpacePage {
     $rel = 0L; $ok = 0
     foreach ($li in $sel) {
       $path = [string]$li.Tag
+      # 以"删除前存在且删除后不存在"判定成功（空目录回收返回 0 字节，不能用字节数判成败）
+      $existed = Test-Path -LiteralPath $path
       $b = Remove-UserPathToRecycle $path
-      if ($b -gt 0) { $ok++; $rel += $b }
-      # 从索引中移除该目录及其子孙，并把释放量从各级祖先合计中扣减
+      if (-not ($existed -and -not (Test-Path -LiteralPath $path))) { continue }   # 失败：跳过且不动索引
+      $ok++; $rel += $b
+      # 仅在删除成功后同步索引：移除该目录及其子孙，并把释放量从各级祖先合计中扣减
       try {
         foreach ($k in @($script:SpaceTotal.Keys)) {
           if ($k -eq $path -or $k.StartsWith($path + '\', 'OrdinalIgnoreCase')) {
@@ -2234,13 +2237,16 @@ function New-DupeFilesPage {
     }
     $r = [System.Windows.Forms.MessageBox]::Show(('确定将 {0} 个重复文件删除到回收站？（每组至少保留 1 个副本，请勿取消"保留"项）' -f $sel.Count), '确认删除', 'YesNo', 'Warning')
     if ($r -ne 'Yes') { return }
-    $rel = 0L; $ok = 0
-    foreach ($it in $sel) {
+    $rel = 0L; $ok = 0; $doneRows = @()
+    foreach ($li in @($script:LvDup.CheckedItems)) {
+      $it = $li.Tag
+      # 以"删除前存在且删除后不存在"判定成功；失败的行保留在列表中，文件也在
+      $existed = Test-Path -LiteralPath $it.Path
       $b = Remove-UserPathToRecycle $it.Path
-      if ($b -gt 0) { $ok++; $rel += $b }
+      if ($existed -and -not (Test-Path -LiteralPath $it.Path)) { $ok++; $rel += $b; $doneRows += $li }
     }
     Log-Line ('重复文件删除: 成功 {0}/{1}, 释放 {2}' -f $ok, $sel.Count, (Format-Bytes $rel))
-    foreach ($li in @($script:LvDup.CheckedItems)) { $script:LvDup.Items.Remove($li) }
+    foreach ($li in $doneRows) { $script:LvDup.Items.Remove($li) }
     try {
       [System.Windows.Forms.MessageBox]::Show(('已删除 {0} 个重复文件，释放 {1}；占用/受保护自动跳过。' -f $ok, (Format-Bytes $rel)), '完成', 'OK', 'Information')
     } catch { }
