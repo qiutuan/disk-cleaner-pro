@@ -1,6 +1,6 @@
 ﻿# ============================================================
 #  DiskCleanerPro - C 盘智能清理工具
-#  PowerShell + WinForms（橙色主题，纯代码绘制，无图片资源）
+#  PowerShell + WPF（Fluent 浅色主题，纯代码绘制，无图片资源）
 #  启动：启动清理工具.bat（pwsh -STA 优先，PS5.1 兜底）
 #  写入边界：所有运行时数据仅写入本目录 runtime\ 内
 # ============================================================
@@ -54,7 +54,6 @@ function Write-CleanLog {
 #endregion
 
 #region 程序集加载（引擎与 UI 共用，须在异常兜底之前）
-Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 Add-Type -AssemblyName Microsoft.VisualBasic   # 回收站删除 API
 Add-Type -AssemblyName PresentationFramework    # WPF 界面（v1.3.0）
@@ -63,273 +62,10 @@ Add-Type -AssemblyName WindowsBase
 Add-Type -AssemblyName System.Xaml
 #endregion
 
-#region 现代控件（Win11 风格：圆角按钮 / 圆角进度条 / 卡片面板，纯代码绘制无图片）
-# 视觉样式必须在创建任何控件之前开启一次（幂等，worker runspace 中重复调用无副作用）
-try { [System.Windows.Forms.Application]::EnableVisualStyles() } catch { }
-if (-not ('DiskCleaner.ModernButton' -as [type])) {
-# .NET 下 WinForms/绘图类型分散在多个私有程序集（System.Private.Windows.* 等），
-# 逐个引用易漏；此处直接把进程已加载的全部程序集作为编译引用，简单可靠
-$uiRefs = [System.AppDomain]::CurrentDomain.GetAssemblies() |
-  Where-Object { $_.Location } | ForEach-Object { $_.Location } | Sort-Object -Unique
-Add-Type -ReferencedAssemblies $uiRefs -TypeDefinition @'
-using System;
-using System.Drawing;
-using System.Drawing.Drawing2D;
-using System.Text.RegularExpressions;
-using System.Windows.Forms;
-namespace DiskCleaner {
-  public static class Ui {
-    internal static GraphicsPath Rounded(Rectangle r, int rad) {
-      int d = rad * 2;
-      if (d > r.Width) d = r.Width;
-      if (d > r.Height) d = r.Height;
-      GraphicsPath p = new GraphicsPath();
-      p.AddArc(r.X, r.Y, d, d, 180, 90);
-      p.AddArc(r.Right - d, r.Y, d, d, 270, 90);
-      p.AddArc(r.Right - d, r.Bottom - d, d, d, 0, 90);
-      p.AddArc(r.X, r.Bottom - d, d, d, 90, 90);
-      p.CloseFigure();
-      return p;
-    }
-    internal static Color Shift(Color c, int amt) {
-      return Color.FromArgb(Math.Max(0, Math.Min(255, c.R + amt)),
-                            Math.Max(0, Math.Min(255, c.G + amt)),
-                            Math.Max(0, Math.Min(255, c.B + amt)));
-    }
-    internal static bool IsDark(Color c) {
-      return (0.299 * c.R + 0.587 * c.G + 0.114 * c.B) < 140;
-    }
-  }
-  // 圆角按钮：深色底悬停提亮、浅色底悬停加深；禁用自动置灰
-  public class ModernButton : Button {
-    private int _radius = 6;
-    private Color _hover = Color.Empty;
-    private Color _press = Color.Empty;
-    private bool _isHover;
-    private bool _isDown;
-    public ModernButton() {
-      SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint |
-               ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
-      BackColor = Color.FromArgb(0xFB, 0xE7, 0xCC);
-      ForeColor = Color.FromArgb(0x6D, 0x4C, 0x41);
-      FlatStyle = FlatStyle.Flat;
-      FlatAppearance.BorderSize = 0;
-    }
-    public int Radius { get { return _radius; } set { _radius = value; Invalidate(); } }
-    public Color HoverBackColor { get { return _hover; } set { _hover = value; Invalidate(); } }
-    public Color PressBackColor { get { return _press; } set { _press = value; Invalidate(); } }
-    protected override void OnMouseEnter(EventArgs e) { base.OnMouseEnter(e); _isHover = true; Invalidate(); }
-    protected override void OnMouseLeave(EventArgs e) { base.OnMouseLeave(e); _isHover = false; Invalidate(); }
-    protected override void OnMouseDown(MouseEventArgs me) { base.OnMouseDown(me); _isDown = true; Invalidate(); }
-    protected override void OnMouseUp(MouseEventArgs me) { base.OnMouseUp(me); _isDown = false; Invalidate(); }
-    protected override void OnPaint(PaintEventArgs e) {
-      e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
-      Rectangle r = new Rectangle(0, 0, Width - 1, Height - 1);
-      Color fill = Enabled ? BackColor : Color.FromArgb(0xEC, 0xEC, 0xEC);
-      if (Enabled && _isDown) {
-        fill = (_press != Color.Empty) ? _press : (Ui.IsDark(BackColor) ? Ui.Shift(BackColor, -28) : Ui.Shift(BackColor, -32));
-      } else if (Enabled && _isHover) {
-        fill = (_hover != Color.Empty) ? _hover : (Ui.IsDark(BackColor) ? Ui.Shift(BackColor, 22) : Ui.Shift(BackColor, -16));
-      }
-      using (GraphicsPath path = Ui.Rounded(r, _radius)) {
-        using (SolidBrush b = new SolidBrush(fill)) e.Graphics.FillPath(b, path);
-        TextRenderer.DrawText(e.Graphics, Text, Font,
-          new Rectangle(1, 1, Width - 2, Height - 2),
-          Enabled ? ForeColor : Color.FromArgb(0x9E, 0x9E, 0x9E),
-          TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter |
-          TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding);
-      }
-    }
-  }
-  // 圆角进度条：连续态画橙色渐变填充，Marquee 态自带位移动画
-  public class ModernProgressBar : ProgressBar {
-    private Color _fill = Color.FromArgb(0xF5, 0x7C, 0x00);
-    private Color _track = Color.FromArgb(0xEF, 0xE3, 0xD5);
-    private System.Windows.Forms.Timer _anim;
-    private int _pos = 0;
-    private bool _running = false;
-    public ModernProgressBar() {
-      SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint |
-               ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
-    }
-    public Color BarColor { get { return _fill; } set { _fill = value; Invalidate(); } }
-    public Color TrackColor { get { return _track; } set { _track = value; Invalidate(); } }
-    private void SetupAnim() {
-      if (_anim != null) return;
-      _anim = new System.Windows.Forms.Timer();
-      _anim.Interval = 24;
-      _anim.Tick += delegate { _pos = (_pos + 6) % Math.Max(80, Width + 80); Invalidate(); };
-    }
-    private void SetRunning(bool r) {
-      if (r && !_running) { SetupAnim(); _anim.Start(); _running = true; }
-      else if (!r && _running) { if (_anim != null) _anim.Stop(); _running = false; }
-    }
-    protected override void OnStyleChanged(EventArgs e) {
-      base.OnStyleChanged(e);
-      SetRunning(Style == ProgressBarStyle.Marquee);
-    }
-    protected override void OnVisibleChanged(EventArgs e) {
-      base.OnVisibleChanged(e);
-      if (Style == ProgressBarStyle.Marquee) SetRunning(Visible);
-    }
-    protected override void OnHandleDestroyed(EventArgs e) {
-      SetRunning(false);
-      base.OnHandleDestroyed(e);
-    }
-    protected override void OnPaintBackground(PaintEventArgs pevent) { }
-    protected override void OnPaint(PaintEventArgs e) {
-      e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
-      Rectangle r = new Rectangle(0, 0, Width - 1, Height - 1);
-      int rad = Math.Max(3, Math.Min(8, Height / 2));
-      using (GraphicsPath path = Ui.Rounded(r, rad)) {
-        using (SolidBrush bg = new SolidBrush(_track)) e.Graphics.FillPath(bg, path);
-      }
-      if (Style == ProgressBarStyle.Marquee) {
-        int seg = Math.Max(70, Width / 3);
-        int x = _pos - seg;
-        if (x < 0) x = 0;
-        int w = Math.Min(seg, Width - x);
-        if (w > 2) {
-          Rectangle fr = new Rectangle(x, 1, w, Height - 2);
-          using (GraphicsPath fp = Ui.Rounded(fr, rad)) {
-            using (LinearGradientBrush fb = new LinearGradientBrush(fr, _fill, Ui.Shift(_fill, 26), 90f))
-              e.Graphics.FillPath(fb, fp);
-          }
-        }
-      } else {
-        double pct = (Maximum > 0) ? (double)Value / Maximum : 0;
-        int w = (int)((Width - 2) * pct);
-        if (w > 0) {
-          Rectangle fr = new Rectangle(1, 1, w, Height - 2);
-          using (GraphicsPath fp = Ui.Rounded(fr, rad)) {
-            using (LinearGradientBrush fb = new LinearGradientBrush(fr, _fill, Ui.Shift(_fill, 26), 90f))
-              e.Graphics.FillPath(fb, fp);
-          }
-        }
-      }
-    }
-  }
-  // 卡片面板：白底圆角 + 细描边（用于右侧详情栏等独立卡片）
-  public class CardPanel : Panel {
-    private int _radius = 8;
-    private Color _border = Color.FromArgb(0xE8, 0xE0, 0xD8);
-    public CardPanel() {
-      SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint |
-               ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw |
-               ControlStyles.SupportsTransparentBackColor, true);
-      BackColor = Color.White;
-    }
-    public int Radius { get { return _radius; } set { _radius = value; Invalidate(); } }
-    public Color BorderColor { get { return _border; } set { _border = value; Invalidate(); } }
-    protected override void OnPaintBackground(PaintEventArgs e) { }
-    protected override void OnPaint(PaintEventArgs e) {
-      e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
-      Rectangle r = new Rectangle(0, 0, Width - 1, Height - 1);
-      using (GraphicsPath path = Ui.Rounded(r, _radius)) {
-        using (SolidBrush b = new SolidBrush(BackColor)) e.Graphics.FillPath(b, path);
-        using (Pen p = new Pen(_border)) e.Graphics.DrawPath(p, path);
-      }
-    }
-  }
-  // 列表排序器：Mode 0=文本字典序 1=数值（解析 KB/MB/GB/TB/PB 单位与百分比；解析失败回退文本）
-  public class LvSorter : System.Collections.IComparer {
-    public int Column = -1;
-    public int Mode = 0;
-    public int Dir = 1;
-    static double ParseNum(string s) {
-      if (string.IsNullOrEmpty(s)) return double.NegativeInfinity;
-      string t = s.Replace(",", "").Trim();
-      Match m = Regex.Match(t, @"^(-?[\d.]+)\s*([KMGTP])?(?:B)?\s*%?\s*$", RegexOptions.IgnoreCase);
-      if (m.Success) {
-        double v;
-        if (!double.TryParse(m.Groups[1].Value, System.Globalization.NumberStyles.Float,
-            System.Globalization.CultureInfo.InvariantCulture, out v)) return double.NegativeInfinity;
-        string u = m.Groups[2].Value.ToUpperInvariant();
-        if (u == "K") v *= 1024.0; else if (u == "M") v *= 1048576.0;
-        else if (u == "G") v *= 1073741824.0; else if (u == "T") v *= 1099511627776.0;
-        else if (u == "P") v *= 1125899906842624.0;
-        return v;
-      }
-      return double.NegativeInfinity;
-    }
-    public int Compare(object x, object y) {
-      System.Windows.Forms.ListViewItem a = (System.Windows.Forms.ListViewItem)x;
-      System.Windows.Forms.ListViewItem b = (System.Windows.Forms.ListViewItem)y;
-      string sa = (a.SubItems.Count > Column) ? a.SubItems[Column].Text : "";
-      string sb = (b.SubItems.Count > Column) ? b.SubItems[Column].Text : "";
-      int r;
-      if (Mode == 1) {
-        double da = ParseNum(sa); double db = ParseNum(sb);
-        if (double.IsNegativeInfinity(da) || double.IsNegativeInfinity(db))
-          r = string.Compare(sa, sb, StringComparison.CurrentCulture);
-        else r = da.CompareTo(db);
-      } else {
-        r = string.Compare(sa, sb, StringComparison.CurrentCulture);
-      }
-      return r * Dir;
-    }
-  }
-}
-'@
-}
-# 统一创建现代按钮：$Back 十六进制，默认浅橙副按钮样式（深色主按钮/红色危险按钮由调用处显式覆盖）
-function New-ModernButton {
-  param([string]$Text, [string]$Back = $script:Theme.LightBtn, [string]$Fore = '#374151', [int]$FontSize = 9, [switch]$Bold)
-  $b = New-Object DiskCleaner.ModernButton
-  $b.Text = $Text
-  $b.BackColor = [System.Drawing.ColorTranslator]::FromHtml($Back)
-  $b.ForeColor = [System.Drawing.ColorTranslator]::FromHtml($Fore)
-  $style = if ($Bold) { [System.Drawing.FontStyle]::Bold } else { [System.Drawing.FontStyle]::Regular }
-  $b.Font = New-Object System.Drawing.Font($script:Theme.FontUi, $FontSize, $style)
-  return $b
-}
-# 统一创建现代进度条：$Fill 填充色，$Track 轨道色
-function New-ModernProgressBar {
-  param([string]$Fill = $script:Theme.Primary, [string]$Track = '#EFE3D5')
-  $b = New-Object DiskCleaner.ModernProgressBar
-  $b.BarColor = [System.Drawing.ColorTranslator]::FromHtml($Fill)
-  $b.TrackColor = [System.Drawing.ColorTranslator]::FromHtml($Track)
-  return $b
-}
-
-function Register-ColumnSort {
-  # 列头点击排序助手（所有列表通用）：
-  #   NumericCols 中的列按数值排序（含 KB/MB/GB/TB/PB/百分比解析，解析失败回退文本字典序）；
-  #   同一列再次点击切换升/降序。排序器状态挂在 $Lv.Tag 上，事件闭包不捕获外部变量
-  param([System.Windows.Forms.ListView]$Lv, [int[]]$NumericCols = @())
-  $s0 = New-Object DiskCleaner.LvSorter
-  $s0.Column = -1
-  $Lv.Tag = @{ Sorter = $s0; Numeric = $NumericCols }
-  $Lv.add_ColumnClick({
-    param($s, $e)
-    try {
-      $st = $s.Tag
-      if (-not $st) { return }
-      $sorter = $st.Sorter
-      $col = $e.Column
-      if ($sorter.Column -eq $col) {
-        $sorter.Dir = - $sorter.Dir
-      } else {
-        $sorter.Column = $col
-        $sorter.Dir = 1
-        $sorter.Mode = if (@($st.Numeric) -contains $col) { 1 } else { 0 }
-      }
-      $s.Sorting = 'None'
-      $s.ListViewItemSorter = $sorter   # 赋值即触发排序
-    } catch { }
-  })
-}
-#endregion
-
 #region 全局异常兜底（程序绝不闪退）
 [AppDomain]::CurrentDomain.add_UnhandledException({
   param($s, $e)
   Write-CleanLog ("UnhandledException: " + $e.ExceptionObject.ToString())
-})
-[System.Windows.Forms.Application]::add_ThreadException({
-  param($s, $e)
-  Write-CleanLog ("ThreadException: " + $e.Exception.Message)
-  try { [System.Windows.Forms.MessageBox]::Show($e.Exception.Message, 'DiskCleanerPro 提示', 'OK', 'Warning') } catch { }
 })
 #endregion
 
@@ -941,7 +677,7 @@ function New-WpfPlaceholder {
 }
 
 function Add-WpfSortHeader {
-  # WPF 表头点击排序助手（取代 WinForms 的 Register-ColumnSort/LvSorter）。
+  # WPF 表头点击排序助手（WinForms 时代的 Register-ColumnSort/LvSorter 已随 v1.3.0 移除）。
   # 点击排序列在 升序↔降序 间切换；排序参数打包进表头自身 Tag，点击时从事件参数读取，
   # 不依赖函数局部变量闭包（WPF 事件回调拿不到定义时所在函数的局部作用域，只能经 $script: / Tag 传参）。
   #  - $Header  : 表头 TextBlock（挂 MouseLeftButtonDown）
@@ -3435,12 +3171,6 @@ function New-StartupPage {
 #endregion
 
 #region 主窗口（橙色主题完整界面）
-
-
-
-
-
-
 
 $script:WpfShellXaml = @'
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
