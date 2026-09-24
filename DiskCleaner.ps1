@@ -2403,7 +2403,124 @@ function Test-IsAdmin {
   } catch { return $false }
 }
 
-function New-SysAccelPage { return (New-WpfPlaceholder -Title '系统加速' -Msg '内存清理与系统加速（WPF 重构中）') }
+function New-SysAccelPage {
+  # 布局：内存卡片（标题 + 进度条 + 百分比 + 明细 + 操作按钮 + 结果）
+  $g = New-Object System.Windows.Controls.Grid
+  $card = New-Object System.Windows.Controls.Border
+  $card.Background = (New-WpfBrush '#FFFFFF')
+  $card.BorderBrush = (New-WpfBrush $script:Theme.CardLine)
+  $card.BorderThickness = (New-WpfThickness 1)
+  $card.Margin = (New-WpfThickness 16)
+  $sp = New-Object System.Windows.Controls.StackPanel
+  $sp.Margin = (New-WpfThickness 20 18 20 18)
+  $tTitle = New-Object System.Windows.Controls.TextBlock
+  $tTitle.Text = '内存占用'
+  $tTitle.FontSize = 15; $tTitle.FontWeight = [System.Windows.FontWeights]::Bold
+  $tTitle.Foreground = (New-WpfBrush $script:Theme.Primary)
+  $null = $sp.Children.Add($tTitle)
+
+  # 进度条 + 百分比
+  $row1 = New-Object System.Windows.Controls.Grid
+  $null = $row1.ColumnDefinitions.Add((New-Object System.Windows.Controls.ColumnDefinition))
+  $null = $row1.ColumnDefinitions.Add((New-Object System.Windows.Controls.ColumnDefinition))
+  $script:MemBar = New-Object System.Windows.Controls.ProgressBar
+  $script:MemBar.Height = 10; $script:MemBar.Minimum = 0; $script:MemBar.Maximum = 100; $script:MemBar.Value = 0
+  $script:MemBar.Foreground = (New-WpfBrush $script:Theme.Primary); $script:MemBar.Background = (New-WpfBrush '#EEF0F2')
+  $script:MemBar.VerticalAlignment = 'Center'; $script:MemBar.Margin = (New-WpfThickness 0 14 0 0)
+  $null = $row1.Children.Add($script:MemBar)
+  $script:LblMemPct = New-Object System.Windows.Controls.TextBlock
+  $script:LblMemPct.Text = '--'
+  $script:LblMemPct.FontSize = 26; $script:LblMemPct.FontWeight = [System.Windows.FontWeights]::Bold
+  $script:LblMemPct.Foreground = (New-WpfBrush $script:Theme.Primary); $script:LblMemPct.VerticalAlignment = 'Center'
+  $script:LblMemPct.Margin = (New-WpfThickness 16 8 0 0)
+  [System.Windows.Controls.Grid]::SetColumn($script:LblMemPct, 1); $null = $row1.Children.Add($script:LblMemPct)
+  $null = $sp.Children.Add($row1)
+
+  $script:LblMemDetail = New-Object System.Windows.Controls.TextBlock
+  $script:LblMemDetail.Text = '已用 -- / 共 --'
+  $script:LblMemDetail.Foreground = (New-WpfBrush $script:Theme.SubText); $script:LblMemDetail.FontSize = 12
+  $script:LblMemDetail.Margin = (New-WpfThickness 0 8 0 0)
+  $null = $sp.Children.Add($script:LblMemDetail)
+
+  # 操作行：清理待机内存 / 修剪工作集 / 管理员提示
+  $row2 = New-Object System.Windows.Controls.Grid
+  $null = $row2.ColumnDefinitions.Add((New-Object System.Windows.Controls.ColumnDefinition))
+  $null = $row2.ColumnDefinitions.Add((New-Object System.Windows.Controls.ColumnDefinition))
+  $null = $row2.ColumnDefinitions.Add((New-Object System.Windows.Controls.ColumnDefinition))
+  $script:BtnPurgeStandby = New-Object System.Windows.Controls.Button
+  $script:BtnPurgeStandby.Content = '清理待机内存'
+  $script:BtnPurgeStandby.Background = (New-WpfBrush $script:Theme.Primary); $script:BtnPurgeStandby.Foreground = (New-WpfBrush '#FFFFFF')
+  $script:BtnPurgeStandby.Padding = (New-WpfThickness 16 6 16 6); $script:BtnPurgeStandby.Margin = (New-WpfThickness 0 16 0 0)
+  $null = $row2.Children.Add($script:BtnPurgeStandby)
+  $script:BtnTrimWS = New-Object System.Windows.Controls.Button
+  $script:BtnTrimWS.Content = '修剪工作集'
+  $script:BtnTrimWS.Background = (New-WpfBrush $script:Theme.Primary); $script:BtnTrimWS.Foreground = (New-WpfBrush '#FFFFFF')
+  $script:BtnTrimWS.Padding = (New-WpfThickness 16 6 16 6); $script:BtnTrimWS.Margin = (New-WpfThickness 10 16 0 0)
+  [System.Windows.Controls.Grid]::SetColumn($script:BtnTrimWS, 1); $null = $row2.Children.Add($script:BtnTrimWS)
+  $script:LblMemAdmin = New-Object System.Windows.Controls.TextBlock
+  $script:LblMemAdmin.Text = '需要管理员权限'; $script:LblMemAdmin.VerticalAlignment = 'Center'
+  $script:LblMemAdmin.Foreground = (New-WpfBrush $script:Theme.Disabled); $script:LblMemAdmin.FontSize = 12
+  $script:LblMemAdmin.Margin = (New-WpfThickness 12 16 0 0)
+  [System.Windows.Controls.Grid]::SetColumn($script:LblMemAdmin, 2); $null = $row2.Children.Add($script:LblMemAdmin)
+  $null = $sp.Children.Add($row2)
+
+  $script:LblMemResult = New-Object System.Windows.Controls.TextBlock
+  $script:LblMemResult.Text = '每 2 秒自动刷新内存占用。'
+  $script:LblMemResult.Foreground = (New-WpfBrush $script:Theme.SubText); $script:LblMemResult.FontSize = 12
+  $script:LblMemResult.Margin = (New-WpfThickness 0 12 0 0); $script:LblMemResult.TextWrapping = 'Wrap'
+  $null = $sp.Children.Add($script:LblMemResult)
+
+  $card.Child = $sp
+  $null = $g.Children.Add($card)
+
+  # 每 2 秒刷新内存占用（DispatcherTimer，轻量 P/Invoke，非 WMI）
+  $script:MemTimer = New-Object System.Windows.Threading.DispatcherTimer
+  $script:MemTimer.Interval = [TimeSpan]::FromSeconds(2)
+  $script:MemTimer.Add_Tick({
+    try {
+      $mi = Get-MemoryInfoText
+      if ($mi) {
+        $script:LblMemPct.Text = ('{0}%' -f $mi.Pct)
+        $script:MemBar.Value = [Math]::Min(100, [Math]::Max(0, $mi.Pct))
+        $script:LblMemDetail.Text = ('已用 {0} / 共 {1}' -f (Format-Bytes $mi.UsedBytes), (Format-Bytes $mi.TotalBytes))
+      }
+    } catch { }
+  })
+  $script:MemTimer.Start()
+
+  $script:BtnPurgeStandby.Add_Click({
+    if (-not (Test-IsAdmin)) {
+      try { $null = [System.Windows.MessageBox]::Show('清理待机内存需要管理员权限，请以管理员身份运行本工具。', '提示', [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Information) } catch { }
+      return
+    }
+    try {
+      $st = Invoke-MemoryPurge -Command 5
+      if ($st -eq 0) { $script:LblMemResult.Text = ('待机内存已清理 {0}' -f (Get-Date -Format 'HH:mm:ss')) }
+      else           { $script:LblMemResult.Text = ('清理失败：NTSTATUS 0x{0:X8}' -f $st) }
+      Log-Line ('系统加速: 清理待机内存 NTSTATUS=0x{0:X8}' -f $st)
+    } catch {
+      $script:LblMemResult.Text = '清理失败：系统不支持该调用'
+      Log-Line ('系统加速: 清理待机内存异常 ' + $_.Exception.Message)
+    }
+  })
+  $script:BtnTrimWS.Add_Click({
+    if (-not (Test-IsAdmin)) {
+      try { $null = [System.Windows.MessageBox]::Show('修剪工作集需要管理员权限，请以管理员身份运行本工具。', '提示', [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Information) } catch { }
+      return
+    }
+    try {
+      $st = Invoke-MemoryPurge -Command 3
+      if ($st -eq 0) { $script:LblMemResult.Text = ('工作集已修剪 {0}' -f (Get-Date -Format 'HH:mm:ss')) }
+      else           { $script:LblMemResult.Text = ('修剪失败：NTSTATUS 0x{0:X8}' -f $st) }
+      Log-Line ('系统加速: 修剪工作集 NTSTATUS=0x{0:X8}' -f $st)
+    } catch {
+      $script:LblMemResult.Text = '修剪失败：系统不支持该调用'
+      Log-Line ('系统加速: 修剪工作集异常 ' + $_.Exception.Message)
+    }
+  })
+
+  return $g
+}
 
 # ---------- Tab: 软件占用 ----------
 function Get-InstalledSoftware {
@@ -2975,7 +3092,149 @@ function Remove-OldRestorePoints {
   return $del
 }
 
-function New-RestorePage { return (New-WpfPlaceholder -Title '还原点' -Msg '系统还原点管理（WPF 重构中）') }
+function New-RestorePage {
+  # 布局：工具栏 44（刷新 / 删除旧还原点 / 状态）| 表头+列表
+  $g = New-Object System.Windows.Controls.Grid
+  $r0 = New-Object System.Windows.Controls.RowDefinition; $r0.Height = [System.Windows.GridLength]::new(44)
+  $r1 = New-Object System.Windows.Controls.RowDefinition; $r1.Height = [System.Windows.GridLength]::new(1, [System.Windows.GridUnitType]::Star)
+  $null = $g.RowDefinitions.Add($r0); $null = $g.RowDefinitions.Add($r1)
+
+  # ===== 工具栏 =====
+  $top = New-Object System.Windows.Controls.Border
+  $top.Background = (New-WpfBrush '#FFFFFF'); $top.BorderBrush = (New-WpfBrush $script:Theme.CardLine); $top.BorderThickness = (New-WpfThickness 0 0 0 1)
+  $tg = New-Object System.Windows.Controls.Grid
+  $null = $tg.ColumnDefinitions.Add((New-Object System.Windows.Controls.ColumnDefinition))
+  $null = $tg.ColumnDefinitions.Add((New-Object System.Windows.Controls.ColumnDefinition))
+  $null = $tg.ColumnDefinitions.Add((New-Object System.Windows.Controls.ColumnDefinition))
+  $btnRPRefresh = New-Object System.Windows.Controls.Button
+  $btnRPRefresh.Content = '刷新'; $btnRPRefresh.Margin = (New-WpfThickness 12 0 0 0)
+  $btnRPRefresh.Background = (New-WpfBrush $script:Theme.Primary); $btnRPRefresh.Foreground = (New-WpfBrush '#FFFFFF')
+  $btnRPRefresh.Padding = (New-WpfThickness 12 4 12 4)
+  $null = $tg.Children.Add($btnRPRefresh)
+  $script:BtnRPDelete = New-Object System.Windows.Controls.Button
+  $script:BtnRPDelete.Content = '删除旧还原点(保留最近3个)'; $script:BtnRPDelete.Margin = (New-WpfThickness 10 0 0 0)
+  $script:BtnRPDelete.Background = (New-WpfBrush $script:Theme.Red); $script:BtnRPDelete.Foreground = (New-WpfBrush '#FFFFFF')
+  $script:BtnRPDelete.Padding = (New-WpfThickness 12 4 12 4)
+  [System.Windows.Controls.Grid]::SetColumn($script:BtnRPDelete, 1); $null = $tg.Children.Add($script:BtnRPDelete)
+  $script:LblRPStatus = New-Object System.Windows.Controls.TextBlock
+  $script:LblRPStatus.Text = '检测中...'; $script:LblRPStatus.VerticalAlignment = 'Center'
+  $script:LblRPStatus.Foreground = (New-WpfBrush $script:Theme.Text); $script:LblRPStatus.FontSize = 12
+  $script:LblRPStatus.Margin = (New-WpfThickness 16 0 12 0); $script:LblRPStatus.TextTrimming = 'CharacterEllipsis'
+  [System.Windows.Controls.Grid]::SetColumn($script:LblRPStatus, 2); $null = $tg.Children.Add($script:LblRPStatus)
+  $top.Child = $tg
+  [System.Windows.Controls.Grid]::SetRow($top, 0); $null = $g.Children.Add($top)
+
+  # ===== 表头 + 列表 =====
+  $mid = New-Object System.Windows.Controls.Grid
+  $mh = New-Object System.Windows.Controls.RowDefinition; $mh.Height = [System.Windows.GridLength]::new(30)
+  $ml = New-Object System.Windows.Controls.RowDefinition; $ml.Height = [System.Windows.GridLength]::new(1, [System.Windows.GridUnitType]::Star)
+  $null = $mid.RowDefinitions.Add($mh); $null = $mid.RowDefinitions.Add($ml)
+  $hdr = New-Object System.Windows.Controls.Border
+  $hdr.Background = (New-WpfBrush '#F8F9FA'); $hdr.BorderBrush = (New-WpfBrush '#F0F1F3'); $hdr.BorderThickness = (New-WpfThickness 0 0 0 1)
+  $hg = New-Object System.Windows.Controls.Grid
+  $null = $hg.ColumnDefinitions.Add((New-Object System.Windows.Controls.ColumnDefinition)); $hg.ColumnDefinitions[0].Width = [System.Windows.GridLength]::new(90)
+  $null = $hg.ColumnDefinitions.Add((New-Object System.Windows.Controls.ColumnDefinition)); $hg.ColumnDefinitions[1].Width = [System.Windows.GridLength]::new(170)
+  $null = $hg.ColumnDefinitions.Add((New-Object System.Windows.Controls.ColumnDefinition))                       # 描述 *
+  $hCols = @('序号', '创建时间', '描述')
+  $hKeys = @(
+    { param($r) [int]$r.SequenceNumber },
+    { param($r) $r.CreationTime },
+    { param($r) $r.Description }
+  )
+  $script:RPSort = @()
+  for ($ci = 0; $ci -lt $hCols.Count; $ci++) {
+    $ht = New-Object System.Windows.Controls.TextBlock
+    $ht.Text = $hCols[$ci]; $ht.FontSize = 11; $ht.FontWeight = [System.Windows.FontWeights]::Bold
+    $ht.Foreground = (New-WpfBrush $script:Theme.SubText); $ht.VerticalAlignment = 'Center'
+    $ht.Margin = (New-WpfThickness 12 0 6 0)
+    [System.Windows.Controls.Grid]::SetColumn($ht, $ci)
+    $null = $hg.Children.Add($ht)
+    Add-WpfSortHeader -Header $ht -VarName 'RPRows' -Key $hKeys[$ci] -Render { script:Render-RP }
+    $script:RPSort += $ht
+  }
+  $hdr.Child = $hg
+  [System.Windows.Controls.Grid]::SetRow($hdr, 0); $null = $mid.Children.Add($hdr)
+  $scroll = New-Object System.Windows.Controls.ScrollViewer
+  $scroll.VerticalScrollBarVisibility = 'Auto'; $scroll.HorizontalScrollBarVisibility = 'Disabled'
+  $scroll.Background = (New-WpfBrush '#FFFFFF')
+  $script:RPList = New-Object System.Windows.Controls.StackPanel
+  $scroll.Content = $script:RPList
+  [System.Windows.Controls.Grid]::SetRow($scroll, 1); $null = $mid.Children.Add($scroll)
+  [System.Windows.Controls.Grid]::SetRow($mid, 1); $null = $g.Children.Add($mid)
+
+  # ===== 状态 =====
+  $script:RPRows = @()
+
+  # ===== 行助手 =====
+  function script:New-RPRow {
+    param($It)
+    $row = New-Object System.Windows.Controls.Border
+    $row.Tag = $It
+    $row.Background = (New-WpfBrush '#FFFFFF')
+    $row.BorderBrush = (New-WpfBrush '#F0F1F3'); $row.BorderThickness = (New-WpfThickness 0 0 0 1)
+    $row.Padding = (New-WpfThickness 12 5 12 5)
+    $ig = New-Object System.Windows.Controls.Grid
+    $null = $ig.ColumnDefinitions.Add((New-Object System.Windows.Controls.ColumnDefinition)); $ig.ColumnDefinitions[0].Width = [System.Windows.GridLength]::new(90)
+    $null = $ig.ColumnDefinitions.Add((New-Object System.Windows.Controls.ColumnDefinition)); $ig.ColumnDefinitions[1].Width = [System.Windows.GridLength]::new(170)
+    $null = $ig.ColumnDefinitions.Add((New-Object System.Windows.Controls.ColumnDefinition))
+    $tSeq = New-Object System.Windows.Controls.TextBlock
+    $tSeq.Text = [string]$It.SequenceNumber; $tSeq.FontSize = 12; $tSeq.VerticalAlignment = 'Center'
+    $tSeq.Foreground = (New-WpfBrush $script:Theme.Text)
+    $null = $ig.Children.Add($tSeq)
+    $tTime = New-Object System.Windows.Controls.TextBlock
+    $tTime.Text = $(if ($It.CreationTime) { $It.CreationTime.ToString('yyyy-MM-dd HH:mm') } else { '-' })
+    $tTime.FontSize = 12; $tTime.VerticalAlignment = 'Center'
+    $tTime.Foreground = (New-WpfBrush $script:Theme.Text); [System.Windows.Controls.Grid]::SetColumn($tTime, 1); $null = $ig.Children.Add($tTime)
+    $tDesc = New-Object System.Windows.Controls.TextBlock
+    $tDesc.Text = $It.Description; $tDesc.FontSize = 12; $tDesc.VerticalAlignment = 'Center'
+    $tDesc.Foreground = (New-WpfBrush $script:Theme.SubText); $tDesc.TextTrimming = 'CharacterEllipsis'
+    [System.Windows.Controls.Grid]::SetColumn($tDesc, 2); $null = $ig.Children.Add($tDesc)
+    $row.Child = $ig
+    return $row
+  }
+
+  function script:Render-RP {
+    $script:RPList.Children.Clear()
+    foreach ($r in $script:RPRows) { $null = $script:RPList.Children.Add((New-RPRow -It $r)) }
+  }
+
+  function script:Fill-RestoreList {
+    $pts = @(Get-RestorePoints)
+    $script:RPRows = @()
+    if ($pts.Count -eq 0) {
+      $script:LblRPStatus.Text = '系统还原不可用或无还原点（本机服务未启用）'
+      $script:LblRPStatus.Foreground = (New-WpfBrush $script:Theme.Yellow)
+      $script:BtnRPDelete.IsEnabled = $false
+    } else {
+      foreach ($rp in ($pts | Sort-Object CreationTime -Descending)) {
+        # CreationTime 可能是 WMI 字符串日期（如 20260924...+480），须先转 DateTime
+        try { $dt = [System.Management.ManagementDateTimeConverter]::ToDateTime([string]$rp.CreationTime) } catch {
+          try { $dt = [datetime]$rp.CreationTime } catch { $dt = $null }
+        }
+        $script:RPRows += [pscustomobject]@{ SequenceNumber = [int]$rp.SequenceNumber; CreationTime = $dt; Description = [string]$rp.Description }
+      }
+      $script:LblRPStatus.Text = ('系统还原可用：共 {0} 个还原点' -f $pts.Count)
+      $script:LblRPStatus.Foreground = (New-WpfBrush $script:Theme.Green)
+      $script:BtnRPDelete.IsEnabled = $pts.Count -gt 3
+    }
+    Render-RP
+  }
+
+  $btnRPRefresh.Add_Click({ Fill-RestoreList })
+  $script:BtnRPDelete.Add_Click({
+    $r1 = [System.Windows.MessageBox]::Show('删除旧还原点后无法恢复被删除的系统快照！确定继续？', '危险操作', [System.Windows.MessageBoxButton]::YesNo, [System.Windows.MessageBoxImage]::Warning)
+    if ($r1 -ne [System.Windows.MessageBoxResult]::Yes) { return }
+    $r2 = [System.Windows.MessageBox]::Show('再次确认：将删除除最近 3 个外的全部还原点？', '最终确认', [System.Windows.MessageBoxButton]::YesNo, [System.Windows.MessageBoxImage]::Warning)
+    if ($r2 -ne [System.Windows.MessageBoxResult]::Yes) { return }
+    $del = Remove-OldRestorePoints
+    Log-Line ('还原点清理: 删除 {0} 个' -f $del)
+    Fill-RestoreList
+    try { $null = [System.Windows.MessageBox]::Show(('已删除 {0} 个旧还原点。' -f $del), '完成', [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Information) } catch { }
+  })
+
+  Fill-RestoreList
+  return $g
+}
 
 # ---------- Tab: 启动项管理 ----------
 function Get-StartupItems {
@@ -3027,7 +3286,152 @@ function Backup-StartupReg {
   return $files
 }
 
-function New-StartupPage { return (New-WpfPlaceholder -Title '启动项' -Msg '启动项管理（WPF 重构中）') }
+function New-StartupPage {
+  # 布局：工具栏 44（刷新 / 打开启动文件夹 / 备份reg / 计数）| 表头+列表
+  $g = New-Object System.Windows.Controls.Grid
+  $r0 = New-Object System.Windows.Controls.RowDefinition; $r0.Height = [System.Windows.GridLength]::new(44)
+  $r1 = New-Object System.Windows.Controls.RowDefinition; $r1.Height = [System.Windows.GridLength]::new(1, [System.Windows.GridUnitType]::Star)
+  $null = $g.RowDefinitions.Add($r0); $null = $g.RowDefinitions.Add($r1)
+
+  # ===== 工具栏 =====
+  $top = New-Object System.Windows.Controls.Border
+  $top.Background = (New-WpfBrush '#FFFFFF'); $top.BorderBrush = (New-WpfBrush $script:Theme.CardLine); $top.BorderThickness = (New-WpfThickness 0 0 0 1)
+  $tg = New-Object System.Windows.Controls.Grid
+  $null = $tg.ColumnDefinitions.Add((New-Object System.Windows.Controls.ColumnDefinition))
+  $null = $tg.ColumnDefinitions.Add((New-Object System.Windows.Controls.ColumnDefinition))
+  $null = $tg.ColumnDefinitions.Add((New-Object System.Windows.Controls.ColumnDefinition))
+  $null = $tg.ColumnDefinitions.Add((New-Object System.Windows.Controls.ColumnDefinition))
+  $btnStRefresh = New-Object System.Windows.Controls.Button
+  $btnStRefresh.Content = '刷新'; $btnStRefresh.Margin = (New-WpfThickness 12 0 0 0)
+  $btnStRefresh.Background = (New-WpfBrush $script:Theme.Primary); $btnStRefresh.Foreground = (New-WpfBrush '#FFFFFF')
+  $btnStRefresh.Padding = (New-WpfThickness 12 4 12 4)
+  $null = $tg.Children.Add($btnStRefresh)
+  $btnStOpen = New-Object System.Windows.Controls.Button
+  $btnStOpen.Content = '打开启动文件夹'; $btnStOpen.Margin = (New-WpfThickness 10 0 0 0)
+  $btnStOpen.Padding = (New-WpfThickness 12 4 12 4)
+  [System.Windows.Controls.Grid]::SetColumn($btnStOpen, 1); $null = $tg.Children.Add($btnStOpen)
+  $btnStBackup = New-Object System.Windows.Controls.Button
+  $btnStBackup.Content = '备份注册表项(.reg)'; $btnStBackup.Margin = (New-WpfThickness 10 0 0 0)
+  $btnStBackup.Padding = (New-WpfThickness 12 4 12 4)
+  [System.Windows.Controls.Grid]::SetColumn($btnStBackup, 2); $null = $tg.Children.Add($btnStBackup)
+  $script:LblSt = New-Object System.Windows.Controls.TextBlock
+  $script:LblSt.Text = '信息展示为主；修改请用系统"任务管理器>启动"或 msconfig。'
+  $script:LblSt.VerticalAlignment = 'Center'; $script:LblSt.Margin = (New-WpfThickness 16 0 12 0)
+  $script:LblSt.Foreground = (New-WpfBrush $script:Theme.Disabled); $script:LblSt.FontSize = 12
+  $script:LblSt.TextTrimming = 'CharacterEllipsis'
+  [System.Windows.Controls.Grid]::SetColumn($script:LblSt, 3); $null = $tg.Children.Add($script:LblSt)
+  $top.Child = $tg
+  [System.Windows.Controls.Grid]::SetRow($top, 0); $null = $g.Children.Add($top)
+
+  # ===== 表头 + 列表 =====
+  $mid = New-Object System.Windows.Controls.Grid
+  $mh = New-Object System.Windows.Controls.RowDefinition; $mh.Height = [System.Windows.GridLength]::new(30)
+  $ml = New-Object System.Windows.Controls.RowDefinition; $ml.Height = [System.Windows.GridLength]::new(1, [System.Windows.GridUnitType]::Star)
+  $null = $mid.RowDefinitions.Add($mh); $null = $mid.RowDefinitions.Add($ml)
+  $hdr = New-Object System.Windows.Controls.Border
+  $hdr.Background = (New-WpfBrush '#F8F9FA'); $hdr.BorderBrush = (New-WpfBrush '#F0F1F3'); $hdr.BorderThickness = (New-WpfThickness 0 0 0 1)
+  $hg = New-Object System.Windows.Controls.Grid
+  $null = $hg.ColumnDefinitions.Add((New-Object System.Windows.Controls.ColumnDefinition)); $hg.ColumnDefinitions[0].Width = [System.Windows.GridLength]::new(150)
+  $null = $hg.ColumnDefinitions.Add((New-Object System.Windows.Controls.ColumnDefinition)); $hg.ColumnDefinitions[1].Width = [System.Windows.GridLength]::new(200)
+  $null = $hg.ColumnDefinitions.Add((New-Object System.Windows.Controls.ColumnDefinition)); $hg.ColumnDefinitions[2].Width = [System.Windows.GridLength]::new(60)
+  $null = $hg.ColumnDefinitions.Add((New-Object System.Windows.Controls.ColumnDefinition))                       # 命令 *
+  $hCols = @('来源', '名称', '状态', '命令')
+  $hKeys = @(
+    { param($r) $r.Source },
+    { param($r) $r.Name },
+    { param($r) $r.Status },
+    { param($r) $r.Command }
+  )
+  $script:StSort = @()
+  for ($ci = 0; $ci -lt $hCols.Count; $ci++) {
+    $ht = New-Object System.Windows.Controls.TextBlock
+    $ht.Text = $hCols[$ci]; $ht.FontSize = 11; $ht.FontWeight = [System.Windows.FontWeights]::Bold
+    $ht.Foreground = (New-WpfBrush $script:Theme.SubText); $ht.VerticalAlignment = 'Center'
+    $ht.Margin = (New-WpfThickness 12 0 6 0)
+    [System.Windows.Controls.Grid]::SetColumn($ht, $ci)
+    $null = $hg.Children.Add($ht)
+    Add-WpfSortHeader -Header $ht -VarName 'StRows' -Key $hKeys[$ci] -Render { script:Render-St }
+    $script:StSort += $ht
+  }
+  $hdr.Child = $hg
+  [System.Windows.Controls.Grid]::SetRow($hdr, 0); $null = $mid.Children.Add($hdr)
+  $scroll = New-Object System.Windows.Controls.ScrollViewer
+  $scroll.VerticalScrollBarVisibility = 'Auto'; $scroll.HorizontalScrollBarVisibility = 'Disabled'
+  $scroll.Background = (New-WpfBrush '#FFFFFF')
+  $script:StList = New-Object System.Windows.Controls.StackPanel
+  $scroll.Content = $script:StList
+  [System.Windows.Controls.Grid]::SetRow($scroll, 1); $null = $mid.Children.Add($scroll)
+  [System.Windows.Controls.Grid]::SetRow($mid, 1); $null = $g.Children.Add($mid)
+
+  # ===== 状态 =====
+  $script:StRows = @()
+
+  # ===== 行助手 =====
+  function script:New-StRow {
+    param($It)
+    $row = New-Object System.Windows.Controls.Border
+    $row.Tag = $It
+    $row.Background = (New-WpfBrush '#FFFFFF')
+    $row.BorderBrush = (New-WpfBrush '#F0F1F3'); $row.BorderThickness = (New-WpfThickness 0 0 0 1)
+    $row.Padding = (New-WpfThickness 12 5 12 5)
+    $ig = New-Object System.Windows.Controls.Grid
+    $null = $ig.ColumnDefinitions.Add((New-Object System.Windows.Controls.ColumnDefinition)); $ig.ColumnDefinitions[0].Width = [System.Windows.GridLength]::new(150)
+    $null = $ig.ColumnDefinitions.Add((New-Object System.Windows.Controls.ColumnDefinition)); $ig.ColumnDefinitions[1].Width = [System.Windows.GridLength]::new(200)
+    $null = $ig.ColumnDefinitions.Add((New-Object System.Windows.Controls.ColumnDefinition)); $ig.ColumnDefinitions[2].Width = [System.Windows.GridLength]::new(60)
+    $null = $ig.ColumnDefinitions.Add((New-Object System.Windows.Controls.ColumnDefinition))
+    $tSrc = New-Object System.Windows.Controls.TextBlock
+    $tSrc.Text = [string]$It.Source; $tSrc.FontSize = 12; $tSrc.VerticalAlignment = 'Center'
+    $tSrc.Foreground = (New-WpfBrush $script:Theme.SubText); $tSrc.TextTrimming = 'CharacterEllipsis'
+    $null = $ig.Children.Add($tSrc)
+    $tName = New-Object System.Windows.Controls.TextBlock
+    $tName.Text = [string]$It.Name; $tName.FontSize = 12; $tName.VerticalAlignment = 'Center'
+    $tName.Foreground = (New-WpfBrush $script:Theme.Text); $tName.TextTrimming = 'CharacterEllipsis'
+    [System.Windows.Controls.Grid]::SetColumn($tName, 1); $null = $ig.Children.Add($tName)
+    $tStatus = New-Object System.Windows.Controls.TextBlock
+    $tStatus.Text = [string]$It.Status; $tStatus.FontSize = 12; $tStatus.VerticalAlignment = 'Center'
+    $tStatus.Foreground = (New-WpfBrush $script:Theme.Green); [System.Windows.Controls.Grid]::SetColumn($tStatus, 2); $null = $ig.Children.Add($tStatus)
+    $tCmd = New-Object System.Windows.Controls.TextBlock
+    $tCmd.Text = [string]$It.Command; $tCmd.FontSize = 11; $tCmd.VerticalAlignment = 'Center'
+    $tCmd.Foreground = (New-WpfBrush $script:Theme.Disabled); $tCmd.TextTrimming = 'CharacterEllipsis'
+    [System.Windows.Controls.Grid]::SetColumn($tCmd, 3); $null = $ig.Children.Add($tCmd)
+    $row.Child = $ig
+    # 右键：复制命令
+    $menu = New-Object System.Windows.Controls.ContextMenu
+    $miCopy = New-Object System.Windows.Controls.MenuItem; $miCopy.Header = '复制命令'; $miCopy.Tag = $It
+    $miCopy.Add_Click({ $it = $_.Source.Tag; try { [System.Windows.Clipboard]::SetText([string]$it.Command) } catch { } })
+    $null = $menu.Items.Add($miCopy)
+    $row.ContextMenu = $menu
+    return $row
+  }
+
+  function script:Render-St {
+    $script:StList.Children.Clear()
+    foreach ($r in $script:StRows) { $null = $script:StList.Children.Add((New-StRow -It $r)) }
+    $script:LblSt.Text = ('共 {0} 个启动项' -f $script:StRows.Count)
+  }
+
+  function script:Fill-StartupList {
+    $script:StRows = @(Get-StartupItems)
+    Render-St
+  }
+
+  $btnStRefresh.Add_Click({ Fill-StartupList })
+  $btnStOpen.Add_Click({
+    try { Start-Process explorer.exe -ArgumentList ($env:APPDATA + '\Microsoft\Windows\Start Menu\Programs\Startup') } catch { }
+  })
+  $btnStBackup.Add_Click({
+    $files = @(Backup-StartupReg)
+    if ($files.Count -gt 0) {
+      Log-Line ('启动项备份: ' + ($files -join '; '))
+      try { $null = [System.Windows.MessageBox]::Show(('已备份到: ' + ($files -join "`r`n")), '备份完成', [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Information) } catch { }
+    } else {
+      try { $null = [System.Windows.MessageBox]::Show('备份失败（注册表导出未生成文件）。', '提示', [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Warning) } catch { }
+    }
+  })
+
+  Fill-StartupList
+  return $g
+}
 #endregion
 
 #region 主窗口（橙色主题完整界面）
