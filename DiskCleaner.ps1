@@ -1343,6 +1343,237 @@ function New-LargeFilesPage {
   return $p
 }
 
+# ---------- Tab: 空文件夹清理 ----------
+function Get-EmptyDirs {
+  # 找出可安全删除的空目录（级联判定）：
+  #   空目录 = 自身 0 个直接文件，且全部子目录也均为空；
+  # 子目录含重解析点(junction/符号链接)或访问失败 → 一律视为非空（阻断父目录删除，避免误伤目标内容）
+  # 只输出"空子树顶端"（其父目录非空）——删除时整棵空子树一并进回收站
+  param([string]$Root, [System.ComponentModel.BackgroundWorker]$W)
+  $files = New-Object 'System.Collections.Generic.Dictionary[string,int]'
+  $children = New-Object 'System.Collections.Generic.Dictionary[string,System.Collections.Generic.List[string]]'
+  $stack = New-Object System.Collections.Generic.Stack[string]
+  $stack.Push($Root)
+  $dirs = 0
+  while ($stack.Count -gt 0) {
+    if ($W -and $W.CancellationPending) { return $null }
+    $dir = $stack.Pop()
+    $fc = 0
+    $kids = New-Object 'System.Collections.Generic.List[string]'
+    try {
+      $di = [IO.DirectoryInfo]::new($dir)
+      if ($di.Attributes -band [IO.FileAttributes]::ReparsePoint) { continue }   # 重解析目录不入字典（其父会被它阻断）
+      foreach ($f in [IO.Directory]::EnumerateFiles($dir)) { $fc++ }
+      foreach ($d in [IO.Directory]::EnumerateDirectories($dir)) {
+        try {
+          if (([IO.DirectoryInfo]::new($d)).Attributes -band [IO.FileAttributes]::ReparsePoint) {
+            $kids.Add($d)   # 重解析子目录不展开但保留在子列表 → 阻断父目录
+            continue
+          }
+          $kids.Add($d)
+          $stack.Push($d)
+        } catch { $kids.Add($d) }   # 访问失败：不可判定 → 阻断父目录
+      }
+    } catch { continue }            # 无法访问的目录不参与判定（其父已被它阻断）
+    $files[$dir] = $fc
+    $children[$dir] = $kids
+    $dirs++
+    if (($dirs % 500) -eq 0 -and $W) { $W.ReportProgress(0, ("已扫描 {0} 个目录..." -f $dirs)) }
+  }
+  # 自底向上标记：长度倒序保证先判定最深目录
+  $empty = New-Object 'System.Collections.Generic.HashSet[string]'
+  $keys = [string[]]$files.Keys
+  $cmp = [System.Comparison[string]] { param($a, $b) $b.Length.CompareTo($a.Length) }
+  [System.Array]::Sort($keys, $cmp)
+  foreach ($k in $keys) {
+    $isEmpty = ($files[$k] -eq 0)
+    if ($isEmpty) {
+      foreach ($c in $children[$k]) {
+        if (-not $empty.Contains($c)) { $isEmpty = $false; break }
+      }
+    }
+    if ($isEmpty) { $null = $empty.Add($k) }
+  }
+  # 只留空子树顶端（父目录非空）
+  $result = New-Object System.Collections.Generic.List[object]
+  foreach ($k in $keys) {
+    if (-not $empty.Contains($k)) { continue }
+    $pi = $k.LastIndexOf('\')
+    if ($pi -gt 2) {
+      $parent = $k.Substring(0, $pi)
+      if ($empty.Contains($parent)) { continue }
+    }
+    $result.Add([pscustomobject]@{ Path = $k; Name = [IO.Path]::GetFileName($k) })
+  }
+  return $result
+}
+
+function New-EmptyDirPage {
+  $p = New-Object System.Windows.Forms.TabPage
+  $p.Text = '空文件夹'
+  $p.BackColor = [System.Drawing.ColorTranslator]::FromHtml($script:Theme.Bg)
+  $p.Width = 1200
+
+  $top = New-Object System.Windows.Forms.Panel
+  $top.Dock = 'Top'; $top.Height = 44; $top.BackColor = [System.Drawing.Color]::White
+
+  $lblDrv = New-Object System.Windows.Forms.Label
+  $lblDrv.Text = '磁盘:'; $lblDrv.Location = New-Object System.Drawing.Point(12, 13); $lblDrv.AutoSize = $true
+  $top.Controls.Add($lblDrv)
+  $script:CmbDriveE = New-Object System.Windows.Forms.ComboBox
+  $script:CmbDriveE.Location = New-Object System.Drawing.Point(52, 10); $script:CmbDriveE.Width = 66
+  foreach ($d in (Get-FixedDrives)) { $null = $script:CmbDriveE.Items.Add($d) }
+  if ($script:CmbDriveE.Items.Count -gt 0) { $script:CmbDriveE.SelectedIndex = 0 }
+  $top.Controls.Add($script:CmbDriveE)
+
+  $script:BtnScanE = New-ModernButton
+  $script:BtnScanE.Text = '开始扫描'
+  $script:BtnScanE.BackColor = [System.Drawing.ColorTranslator]::FromHtml($script:Theme.Primary)
+  $script:BtnScanE.ForeColor = [System.Drawing.Color]::White; $script:BtnScanE.FlatStyle = 'Flat'
+  $script:BtnScanE.Location = New-Object System.Drawing.Point(132, 8); $script:BtnScanE.Size = New-Object System.Drawing.Size(90, 28)
+  $top.Controls.Add($script:BtnScanE)
+  $script:BtnStopE = New-ModernButton
+  $script:BtnStopE.Text = '停止'
+  $script:BtnStopE.Location = New-Object System.Drawing.Point(228, 8); $script:BtnStopE.Size = New-Object System.Drawing.Size(60, 28); $script:BtnStopE.Enabled = $false
+  $top.Controls.Add($script:BtnStopE)
+  $script:ProgE = New-ModernProgressBar
+  $script:ProgE.Location = New-Object System.Drawing.Point(298, 13); $script:ProgE.Size = New-Object System.Drawing.Size(220, 16)
+  $top.Controls.Add($script:ProgE)
+  $script:LblE = New-Object System.Windows.Forms.Label
+  $script:LblE.Text = '就绪'; $script:LblE.Location = New-Object System.Drawing.Point(526, 14); $script:LblE.AutoSize = $true
+  $top.Controls.Add($script:LblE)
+  $script:LblEHint = New-Object System.Windows.Forms.Label
+  $script:LblEHint.Text = '空子树只显示顶端目录，删除时整个空目录树一并进回收站'
+  $script:LblEHint.Location = New-Object System.Drawing.Point(660, 14); $script:LblEHint.AutoSize = $true
+  $script:LblEHint.ForeColor = [System.Drawing.Color]::Gray
+  $top.Controls.Add($script:LblEHint)
+
+  $script:LvEmpty = New-Object System.Windows.Forms.ListView
+  $script:LvEmpty.Dock = 'Fill'
+  $script:LvEmpty.View = 'Details'; $script:LvEmpty.FullRowSelect = $true; $script:LvEmpty.GridLines = $false; $script:LvEmpty.HideSelection = $false
+  $script:LvEmpty.UseCompatibleStateImageBehavior = $false
+  $script:LvEmpty.CheckBoxes = $true
+  $null = $script:LvEmpty.Columns.Add('名称', 240)
+  $null = $script:LvEmpty.Columns.Add('完整路径', 720)
+
+  $foot = New-Object System.Windows.Forms.Panel
+  $foot.Dock = 'Bottom'; $foot.Height = 48; $foot.BackColor = [System.Drawing.Color]::White
+  $foot.Width = 1200
+  $script:LblETotal = New-Object System.Windows.Forms.Label
+  $script:LblETotal.Text = '共 0 个空目录'
+  $script:LblETotal.Font = New-Object System.Drawing.Font($script:Theme.FontUi, 10, [System.Drawing.FontStyle]::Bold)
+  $script:LblETotal.ForeColor = [System.Drawing.ColorTranslator]::FromHtml($script:Theme.Primary)
+  $script:LblETotal.Location = New-Object System.Drawing.Point(12, 14); $script:LblETotal.AutoSize = $true
+  $foot.Controls.Add($script:LblETotal)
+  $script:BtnSelAllE = New-ModernButton
+  $script:BtnSelAllE.Text = '全选/反选'
+  $script:BtnSelAllE.Location = New-Object System.Drawing.Point(880, 9); $script:BtnSelAllE.Size = New-Object System.Drawing.Size(90, 30)
+  $script:BtnSelAllE.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Right
+  $foot.Controls.Add($script:BtnSelAllE)
+  $script:BtnDelE = New-ModernButton
+  $script:BtnDelE.Text = '删除选中(回收站)'
+  $script:BtnDelE.BackColor = [System.Drawing.ColorTranslator]::FromHtml($script:Theme.Red)
+  $script:BtnDelE.ForeColor = [System.Drawing.Color]::White; $script:BtnDelE.FlatStyle = 'Flat'
+  $script:BtnDelE.Location = New-Object System.Drawing.Point(978, 9); $script:BtnDelE.Size = New-Object System.Drawing.Size(140, 30)
+  $script:BtnDelE.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Right
+  $foot.Controls.Add($script:BtnDelE)
+
+  $p.Controls.Add($foot)
+  $p.Controls.Add($top)
+  $p.Controls.Add($script:LvEmpty)
+
+  $menu = New-Object System.Windows.Forms.ContextMenuStrip
+  $miOpen = New-Object System.Windows.Forms.ToolStripMenuItem('打开所在文件夹')
+  $miCopy = New-Object System.Windows.Forms.ToolStripMenuItem('复制路径')
+  $miDel = New-Object System.Windows.Forms.ToolStripMenuItem('删除到回收站')
+  $null = $menu.Items.Add($miOpen); $null = $menu.Items.Add($miCopy); $null = $menu.Items.Add($miDel)
+  $script:LvEmpty.ContextMenuStrip = $menu
+
+  $script:EmptyWorker = New-Object System.ComponentModel.BackgroundWorker
+  $script:EmptyWorker.WorkerSupportsCancellation = $true
+  $script:EmptyWorker.WorkerReportsProgress = $true
+  $edDoWork = {
+    param($s, $e)
+    $a = $e.Argument
+    $list = Get-EmptyDirs -Root $a.Root -W $s
+    if ($s.CancellationPending) { $e.Cancel = $true; return }
+    $e.Result = $list
+  }
+  Register-WorkerBody -Worker $script:EmptyWorker -Name 'EmptyDir' -ScriptBlock $edDoWork
+  $script:EmptyWorker.add_ProgressChanged({
+    param($s, $e)
+    $script:LblE.Text = [string]$e.UserState
+  })
+  $script:EmptyWorker.add_RunWorkerCompleted({
+    param($s, $e)
+    $script:BtnScanE.Enabled = $true; $script:BtnStopE.Enabled = $false
+    $script:ProgE.Style = 'Continuous'; $script:ProgE.Value = 0
+    if ($e.Cancelled) { $script:LblE.Text = '已取消'; return }
+    $rows = @($e.Result)
+    $script:LvEmpty.BeginUpdate(); $script:LvEmpty.Items.Clear()
+    foreach ($r in $rows) {
+      $li = [System.Windows.Forms.ListViewItem]::new([string[]]@($r.Name, $r.Path))
+      $li.Tag = $r
+      $null = $script:LvEmpty.Items.Add($li)
+    }
+    $script:LvEmpty.EndUpdate()
+    $script:LblETotal.Text = ('共 {0} 个空目录' -f $rows.Count)
+    $script:LblE.Text = '完成'
+    Log-Line ('空文件夹扫描完成: {0} 个空子树' -f $rows.Count)
+  })
+
+  $script:BtnScanE.add_Click({
+    $drive = [string]$script:CmbDriveE.SelectedItem
+    if (-not $drive) {
+      try { [System.Windows.Forms.MessageBox]::Show('请先选择磁盘。', '提示', 'OK', 'Information') } catch { }
+      return
+    }
+    $script:BtnScanE.Enabled = $false; $script:BtnStopE.Enabled = $true
+    $script:ProgE.Style = 'Marquee'; $script:ProgE.MarqueeAnimationSpeed = 30
+    $script:LblE.Text = '扫描中...'
+    $script:LvEmpty.Items.Clear(); $script:LblETotal.Text = '共 0 个空目录'
+    Log-Line ('空文件夹扫描开始: {0}' -f $drive)
+    $script:EmptyWorker.RunWorkerAsync(@{ Root = ($drive + '\') })
+  })
+  $script:BtnStopE.add_Click({ $script:EmptyWorker.CancelAsync() })
+  $script:BtnSelAllE.add_Click({
+    $allChecked = $true
+    foreach ($li in $script:LvEmpty.Items) { if (-not $li.Checked) { $allChecked = $false; break } }
+    foreach ($li in $script:LvEmpty.Items) { $li.Checked = (-not $allChecked) }
+  })
+  $miOpen.add_Click({
+    if ($script:LvEmpty.SelectedItems.Count -gt 0) { Open-InExplorer -Path $script:LvEmpty.SelectedItems[0].Tag.Path -Select }
+  })
+  $miCopy.add_Click({
+    if ($script:LvEmpty.SelectedItems.Count -gt 0) { try { [System.Windows.Forms.Clipboard]::SetText([string]$script:LvEmpty.SelectedItems[0].Tag.Path) } catch { } }
+  })
+  $script:BtnDelE.add_Click({
+    $sel = @($script:LvEmpty.CheckedItems | ForEach-Object { $_.Tag })
+    if ($sel.Count -eq 0) {
+      try { [System.Windows.Forms.MessageBox]::Show('请先勾选要删除的空目录。', '提示', 'OK', 'Information') } catch { }
+      return
+    }
+    $r = [System.Windows.Forms.MessageBox]::Show(('确定将勾选的 {0} 个空目录树删除到回收站？' -f $sel.Count), '确认删除', 'YesNo', 'Warning')
+    if ($r -ne 'Yes') { return }
+    $ok = 0
+    foreach ($it in $sel) {
+      $existed = Test-Path -LiteralPath $it.Path
+      $null = Remove-UserPathToRecycle $it.Path
+      # 空目录无字节可回收（返回恒为 0），以"删除前存在且删除后不存在"判定成功
+      if ($existed -and -not (Test-Path -LiteralPath $it.Path)) { $ok++ }
+    }
+    Log-Line ('空文件夹删除: 成功 {0}/{1}' -f $ok, $sel.Count)
+    foreach ($li in @($script:LvEmpty.CheckedItems)) { $script:LvEmpty.Items.Remove($li) }
+    $script:LblETotal.Text = ('共 {0} 个空目录' -f $script:LvEmpty.Items.Count)
+    try {
+      [System.Windows.Forms.MessageBox]::Show(('已删除 {0} 个空目录树；被占用/受保护的目录自动跳过。' -f $ok), '完成', 'OK', 'Information')
+    } catch { }
+  })
+  $miDel.add_Click({ $script:BtnDelE.PerformClick() })
+
+  return $p
+}
+
 # ---------- Tab: 软件占用 ----------
 function Get-InstalledSoftware {
   $rows = New-Object System.Collections.Generic.List[object]
@@ -2274,8 +2505,9 @@ function New-MainWindow {
   $tabClean.Controls.Add($script:MainListView)
   $tabs.Controls.Add($tabClean)
 
-  # ===== Tab2-7 附加功能页 =====
+  # ===== Tab2-8 附加功能页 =====
   $tabs.Controls.Add((New-SpacePage))
+  $tabs.Controls.Add((New-EmptyDirPage))
   $tabs.Controls.Add((New-LargeFilesPage))
   $tabs.Controls.Add((New-SoftwarePage))
   $tabs.Controls.Add((New-DupeFilesPage))
