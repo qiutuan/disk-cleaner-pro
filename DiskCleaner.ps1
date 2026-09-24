@@ -940,6 +940,45 @@ function New-WpfPlaceholder {
   return $g
 }
 
+function Add-WpfSortHeader {
+  # WPF 表头点击排序助手（取代 WinForms 的 Register-ColumnSort/LvSorter）。
+  # 点击排序列在 升序↔降序 间切换；排序参数打包进表头自身 Tag，点击时从事件参数读取，
+  # 不依赖函数局部变量闭包（WPF 事件回调拿不到定义时所在函数的局部作用域，只能经 $script: / Tag 传参）。
+  #  - $Header  : 表头 TextBlock（挂 MouseLeftButtonDown）
+  #  - $VarName : script 作用域中保存"当前行数据数组"的变量名（排序后写回）
+  #  - $Key     : scriptblock，输入一行数据返回排序键（数字键自动按数值排；字符串/日期按文本排）
+  #  - $Render  : scriptblock，无参；按当前行数组重渲染列表
+  param(
+    [System.Windows.Controls.TextBlock]$Header,
+    [string]$VarName,
+    [scriptblock]$Key,
+    [scriptblock]$Render
+  )
+  $Header.Cursor = [System.Windows.Input.Cursors]::Hand
+  $Header.ToolTip = '点击排序'
+  $Header.Tag = [pscustomobject]@{ State = 0; Var = $VarName; Key = $Key; Render = $Render }
+  $Header.Add_MouseLeftButtonDown({
+    param($s, $e)
+    try {
+      $cfg = $s.Tag
+      $rows = @((Get-Variable -Name $cfg.Var -Scope Script -ErrorAction SilentlyContinue).Value)
+      if ($rows.Count -le 1) { return }
+      # Sort-Object 对 -Property 脚本块在自己的会话状态里求值，拿不到本回调的局部变量 $cfg，
+      # 排序键经 $script:SortKey 中转（脚本作用域对 cmdlet 调用的脚本块始终可见）。
+      $script:SortKey = $cfg.Key
+      $asc = ($cfg.State -ne 1)
+      $sorted = if ($asc) {
+        @($rows | Sort-Object -Property { & $script:SortKey $_ })
+      } else {
+        @($rows | Sort-Object -Property { & $script:SortKey $_ } -Descending)
+      }
+      Set-Variable -Name $cfg.Var -Scope Script -Value $sorted
+      $cfg.State = if ($asc) { 1 } else { -1 }
+      & ($cfg.Render)
+    } catch { Log-Line ('表头排序出错: ' + $_.Exception.Message) }
+  })
+}
+
 function New-CleanPage {
   # ===== 布局：左列表 | 右详情 260px =====
   $g = New-Object System.Windows.Controls.Grid
@@ -1559,14 +1598,14 @@ function New-SpacePage {
         }
       } catch { }
     })
-    # 右键菜单（每行独立实例，闭包捕获路径）
+    # 右键菜单（每行独立实例；路径经 MenuItem.Tag 传递——事件回调拿不到函数局部变量闭包）
     $menu = New-Object System.Windows.Controls.ContextMenu
-    $miOpen = New-Object System.Windows.Controls.MenuItem; $miOpen.Header = '打开所在文件夹'
-    $miOpen.Add_Click({ Open-InExplorer -Path $Path -Select })
-    $miCopy = New-Object System.Windows.Controls.MenuItem; $miCopy.Header = '复制路径'
-    $miCopy.Add_Click({ try { [System.Windows.Clipboard]::SetText($Path) } catch { } })
-    $miDel = New-Object System.Windows.Controls.MenuItem; $miDel.Header = '删除到回收站'
-    $miDel.Add_Click({ Remove-SpaceDirs -Paths @($Path) })
+    $miOpen = New-Object System.Windows.Controls.MenuItem; $miOpen.Header = '打开所在文件夹'; $miOpen.Tag = $Path
+    $miOpen.Add_Click({ $p = [string]$_.Source.Tag; Open-InExplorer -Path $p -Select })
+    $miCopy = New-Object System.Windows.Controls.MenuItem; $miCopy.Header = '复制路径'; $miCopy.Tag = $Path
+    $miCopy.Add_Click({ try { [System.Windows.Clipboard]::SetText([string]$_.Source.Tag) } catch { } })
+    $miDel = New-Object System.Windows.Controls.MenuItem; $miDel.Header = '删除到回收站'; $miDel.Tag = $Path
+    $miDel.Add_Click({ Remove-SpaceDirs -Paths @([string]$_.Source.Tag) })
     $null = $menu.Items.Add($miOpen); $null = $menu.Items.Add($miCopy); $null = $menu.Items.Add($miDel)
     $row.ContextMenu = $menu
     return $row
@@ -1738,7 +1777,264 @@ function Get-LargeFiles {
   return $result
 }
 
-function New-LargeFilesPage { return (New-WpfPlaceholder -Title '大文件' -Msg '列出大文件并按体积排序（WPF 重构中）') }
+function New-LargeFilesPage {
+  # 布局：工具栏 44 | 表头+列表 | 页脚 44；单选行 + 右键菜单 + 表头点击排序
+  $g = New-Object System.Windows.Controls.Grid
+  $r0 = New-Object System.Windows.Controls.RowDefinition; $r0.Height = [System.Windows.GridLength]::new(44)
+  $r1 = New-Object System.Windows.Controls.RowDefinition; $r1.Height = [System.Windows.GridLength]::new(1, [System.Windows.GridUnitType]::Star)
+  $r2 = New-Object System.Windows.Controls.RowDefinition; $r2.Height = [System.Windows.GridLength]::new(44)
+  $null = $g.RowDefinitions.Add($r0); $null = $g.RowDefinitions.Add($r1); $null = $g.RowDefinitions.Add($r2)
+
+  # ===== 工具栏 =====
+  $top = New-Object System.Windows.Controls.Border
+  $top.Background = (New-WpfBrush '#FFFFFF'); $top.BorderBrush = (New-WpfBrush $script:Theme.CardLine); $top.BorderThickness = (New-WpfThickness 0 0 0 1)
+  $tg = New-Object System.Windows.Controls.Grid
+  $null = $tg.ColumnDefinitions.Add((New-Object System.Windows.Controls.ColumnDefinition))   # 磁盘标签
+  $null = $tg.ColumnDefinitions.Add((New-Object System.Windows.Controls.ColumnDefinition))   # 磁盘框
+  $null = $tg.ColumnDefinitions.Add((New-Object System.Windows.Controls.ColumnDefinition))   # 阈值标签
+  $null = $tg.ColumnDefinitions.Add((New-Object System.Windows.Controls.ColumnDefinition))   # 阈值框
+  $null = $tg.ColumnDefinitions.Add((New-Object System.Windows.Controls.ColumnDefinition))   # 扫描
+  $null = $tg.ColumnDefinitions.Add((New-Object System.Windows.Controls.ColumnDefinition))   # 停止
+  $null = $tg.ColumnDefinitions.Add((New-Object System.Windows.Controls.ColumnDefinition))   # 进度
+  $null = $tg.ColumnDefinitions.Add((New-Object System.Windows.Controls.ColumnDefinition))   # 状态 *
+  $lblD = New-Object System.Windows.Controls.TextBlock
+  $lblD.Text = '磁盘:'; $lblD.VerticalAlignment = 'Center'; $lblD.Margin = (New-WpfThickness 12 0 0 0)
+  $null = $tg.Children.Add($lblD)
+  $script:CmbDriveL = New-Object System.Windows.Controls.ComboBox
+  $script:CmbDriveL.Width = 66; $script:CmbDriveL.VerticalAlignment = 'Center'; $script:CmbDriveL.Margin = (New-WpfThickness 8 0 0 0)
+  foreach ($d in (Get-FixedDrives)) { $null = $script:CmbDriveL.Items.Add($d) }
+  if ($script:CmbDriveL.Items.Count -gt 0) { $script:CmbDriveL.SelectedIndex = 0 }
+  [System.Windows.Controls.Grid]::SetColumn($script:CmbDriveL, 1); $null = $tg.Children.Add($script:CmbDriveL)
+  $lblTh = New-Object System.Windows.Controls.TextBlock
+  $lblTh.Text = '最小大小:'; $lblTh.VerticalAlignment = 'Center'; $lblTh.Margin = (New-WpfThickness 14 0 0 0)
+  [System.Windows.Controls.Grid]::SetColumn($lblTh, 2); $null = $tg.Children.Add($lblTh)
+  $script:CmbThL = New-Object System.Windows.Controls.ComboBox
+  $script:CmbThL.Width = 88; $script:CmbThL.VerticalAlignment = 'Center'; $script:CmbThL.Margin = (New-WpfThickness 8 0 0 0)
+  $null = $script:CmbThL.Items.Add('100 MB'); $null = $script:CmbThL.Items.Add('300 MB'); $null = $script:CmbThL.Items.Add('500 MB'); $null = $script:CmbThL.Items.Add('1 GB')
+  $script:CmbThL.SelectedIndex = 0
+  [System.Windows.Controls.Grid]::SetColumn($script:CmbThL, 3); $null = $tg.Children.Add($script:CmbThL)
+  $script:BtnScanL = New-Object System.Windows.Controls.Button
+  $script:BtnScanL.Content = '开始扫描'; $script:BtnScanL.Margin = (New-WpfThickness 12 0 0 0)
+  $script:BtnScanL.Background = (New-WpfBrush $script:Theme.Primary); $script:BtnScanL.Foreground = (New-WpfBrush '#FFFFFF')
+  $script:BtnScanL.Padding = (New-WpfThickness 12 4 12 4)
+  [System.Windows.Controls.Grid]::SetColumn($script:BtnScanL, 4); $null = $tg.Children.Add($script:BtnScanL)
+  $script:BtnStopL = New-Object System.Windows.Controls.Button
+  $script:BtnStopL.Content = '停止'; $script:BtnStopL.IsEnabled = $false; $script:BtnStopL.Margin = (New-WpfThickness 8 0 0 0)
+  $script:BtnStopL.Padding = (New-WpfThickness 10 4 10 4)
+  [System.Windows.Controls.Grid]::SetColumn($script:BtnStopL, 5); $null = $tg.Children.Add($script:BtnStopL)
+  $script:ProgL = New-Object System.Windows.Controls.ProgressBar
+  $script:ProgL.Width = 200; $script:ProgL.Height = 8; $script:ProgL.VerticalAlignment = 'Center'; $script:ProgL.Margin = (New-WpfThickness 14 0 0 0)
+  $script:ProgL.Foreground = (New-WpfBrush $script:Theme.Primary); $script:ProgL.Background = (New-WpfBrush '#EEF0F2')
+  [System.Windows.Controls.Grid]::SetColumn($script:ProgL, 6); $null = $tg.Children.Add($script:ProgL)
+  $script:LblL = New-Object System.Windows.Controls.TextBlock
+  $script:LblL.Text = '就绪'; $script:LblL.VerticalAlignment = 'Center'; $script:LblL.Margin = (New-WpfThickness 12 0 0 0)
+  $script:LblL.Foreground = (New-WpfBrush $script:Theme.SubText); $script:LblL.FontSize = 12
+  [System.Windows.Controls.Grid]::SetColumn($script:LblL, 7); $null = $tg.Children.Add($script:LblL)
+  $top.Child = $tg
+  [System.Windows.Controls.Grid]::SetRow($top, 0); $null = $g.Children.Add($top)
+
+  # ===== 表头 + 列表 =====
+  $mid = New-Object System.Windows.Controls.Grid
+  $mh = New-Object System.Windows.Controls.RowDefinition; $mh.Height = [System.Windows.GridLength]::new(30)
+  $ml = New-Object System.Windows.Controls.RowDefinition; $ml.Height = [System.Windows.GridLength]::new(1, [System.Windows.GridUnitType]::Star)
+  $null = $mid.RowDefinitions.Add($mh); $null = $mid.RowDefinitions.Add($ml)
+  $hdr = New-Object System.Windows.Controls.Border
+  $hdr.Background = (New-WpfBrush '#F8F9FA'); $hdr.BorderBrush = (New-WpfBrush '#F0F1F3'); $hdr.BorderThickness = (New-WpfThickness 0 0 0 1)
+  $hg = New-Object System.Windows.Controls.Grid
+  $null = $hg.ColumnDefinitions.Add((New-Object System.Windows.Controls.ColumnDefinition))                       # 名称 *
+  $null = $hg.ColumnDefinitions.Add((New-Object System.Windows.Controls.ColumnDefinition)); $hg.ColumnDefinitions[1].Width = [System.Windows.GridLength]::new(110)
+  $null = $hg.ColumnDefinitions.Add((New-Object System.Windows.Controls.ColumnDefinition)); $hg.ColumnDefinitions[2].Width = [System.Windows.GridLength]::new(150)
+  $null = $hg.ColumnDefinitions.Add((New-Object System.Windows.Controls.ColumnDefinition))                       # 路径 *
+  $hCols = @('名称', '大小', '修改时间', '路径')
+  $hKeys = @(
+    { param($r) $r.Name },
+    { param($r) $r.Size },
+    { param($r) $r.Modified },
+    { param($r) $r.Path }
+  )
+  $script:LfSort = @()
+  for ($ci = 0; $ci -lt $hCols.Count; $ci++) {
+    $ht = New-Object System.Windows.Controls.TextBlock
+    $ht.Text = $hCols[$ci]; $ht.FontSize = 11; $ht.FontWeight = [System.Windows.FontWeights]::Bold
+    $ht.Foreground = (New-WpfBrush $script:Theme.SubText); $ht.VerticalAlignment = 'Center'
+    $ht.Margin = (New-WpfThickness 12 0 6 0)
+    [System.Windows.Controls.Grid]::SetColumn($ht, $ci)
+    $null = $hg.Children.Add($ht)
+    Add-WpfSortHeader -Header $ht -VarName 'LfRows' -Key $hKeys[$ci] -Render { script:Render-Lf }
+    $script:LfSort += $ht
+  }
+  $hdr.Child = $hg
+  [System.Windows.Controls.Grid]::SetRow($hdr, 0); $null = $mid.Children.Add($hdr)
+  $scroll = New-Object System.Windows.Controls.ScrollViewer
+  $scroll.VerticalScrollBarVisibility = 'Auto'; $scroll.HorizontalScrollBarVisibility = 'Disabled'
+  $scroll.Background = (New-WpfBrush '#FFFFFF')
+  $script:LfList = New-Object System.Windows.Controls.StackPanel
+  $scroll.Content = $script:LfList
+  [System.Windows.Controls.Grid]::SetRow($scroll, 1); $null = $mid.Children.Add($scroll)
+  [System.Windows.Controls.Grid]::SetRow($mid, 1); $null = $g.Children.Add($mid)
+
+  # ===== 页脚 =====
+  $foot = New-Object System.Windows.Controls.Border
+  $foot.Background = (New-WpfBrush '#FFFFFF'); $foot.BorderBrush = (New-WpfBrush $script:Theme.CardLine); $foot.BorderThickness = (New-WpfThickness 0 1 0 0)
+  $fg = New-Object System.Windows.Controls.Grid
+  $null = $fg.ColumnDefinitions.Add((New-Object System.Windows.Controls.ColumnDefinition))
+  $null = $fg.ColumnDefinitions.Add((New-Object System.Windows.Controls.ColumnDefinition))
+  $script:LblLTotal = New-Object System.Windows.Controls.TextBlock
+  $script:LblLTotal.Text = '共 0 个文件'; $script:LblLTotal.VerticalAlignment = 'Center'; $script:LblLTotal.Margin = (New-WpfThickness 12 0 0 0)
+  $script:LblLTotal.FontSize = 12; $script:LblLTotal.FontWeight = [System.Windows.FontWeights]::Bold
+  $script:LblLTotal.Foreground = (New-WpfBrush $script:Theme.Primary)
+  $null = $fg.Children.Add($script:LblLTotal)
+  $script:BtnDelL = New-Object System.Windows.Controls.Button
+  $script:BtnDelL.Content = '删除选中(回收站)'
+  $script:BtnDelL.Background = (New-WpfBrush $script:Theme.Red); $script:BtnDelL.Foreground = (New-WpfBrush '#FFFFFF')
+  $script:BtnDelL.Padding = (New-WpfThickness 12 4 12 4); $script:BtnDelL.HorizontalAlignment = 'Right'; $script:BtnDelL.Margin = (New-WpfThickness 0 0 12 0)
+  [System.Windows.Controls.Grid]::SetColumn($script:BtnDelL, 1); $null = $fg.Children.Add($script:BtnDelL)
+  $foot.Child = $fg
+  [System.Windows.Controls.Grid]::SetRow($foot, 2); $null = $g.Children.Add($foot)
+
+  # ===== 状态 =====
+  $script:LfRows = @()   # 当前行数据（排序/删除都写回这里，Render 以其为准）
+  $script:LfSel = $null  # 选中的文件路径
+
+  # ===== 行助手（4 列 + 单选高亮 + 右键菜单） =====
+  function script:New-LfRow {
+    param($It)
+    $row = New-Object System.Windows.Controls.Border
+    $row.Tag = $It
+    $row.Background = (New-WpfBrush $(if ($It.Path -eq $script:LfSel) { '#EAF3FF' } else { '#FFFFFF' }))
+    $row.BorderBrush = (New-WpfBrush '#F0F1F3'); $row.BorderThickness = (New-WpfThickness 0 0 0 1)
+    $row.Padding = (New-WpfThickness 12 5 12 5)
+    $ig = New-Object System.Windows.Controls.Grid
+    $null = $ig.ColumnDefinitions.Add((New-Object System.Windows.Controls.ColumnDefinition))
+    $null = $ig.ColumnDefinitions.Add((New-Object System.Windows.Controls.ColumnDefinition)); $ig.ColumnDefinitions[1].Width = [System.Windows.GridLength]::new(110)
+    $null = $ig.ColumnDefinitions.Add((New-Object System.Windows.Controls.ColumnDefinition)); $ig.ColumnDefinitions[2].Width = [System.Windows.GridLength]::new(150)
+    $null = $ig.ColumnDefinitions.Add((New-Object System.Windows.Controls.ColumnDefinition))
+    $tName = New-Object System.Windows.Controls.TextBlock
+    $tName.Text = $It.Name; $tName.FontSize = 13; $tName.VerticalAlignment = 'Center'; $tName.TextTrimming = 'CharacterEllipsis'
+    $null = $ig.Children.Add($tName)
+    $tSize = New-Object System.Windows.Controls.TextBlock
+    $tSize.Text = Format-Bytes $It.Size; $tSize.FontSize = 12; $tSize.VerticalAlignment = 'Center'; $tSize.HorizontalAlignment = 'Right'
+    $tSize.Foreground = (New-WpfBrush $script:Theme.Text); [System.Windows.Controls.Grid]::SetColumn($tSize, 1); $null = $ig.Children.Add($tSize)
+    $tMod = New-Object System.Windows.Controls.TextBlock
+    $tMod.Text = $It.Modified.ToString('yyyy-MM-dd HH:mm'); $tMod.FontSize = 12; $tMod.VerticalAlignment = 'Center'
+    $tMod.Foreground = (New-WpfBrush $script:Theme.SubText); [System.Windows.Controls.Grid]::SetColumn($tMod, 2); $null = $ig.Children.Add($tMod)
+    $tPath = New-Object System.Windows.Controls.TextBlock
+    $tPath.Text = $It.Path; $tPath.FontSize = 11; $tPath.VerticalAlignment = 'Center'; $tPath.TextTrimming = 'CharacterEllipsis'
+    $tPath.Foreground = (New-WpfBrush $script:Theme.Disabled); [System.Windows.Controls.Grid]::SetColumn($tPath, 3); $null = $ig.Children.Add($tPath)
+    $row.Child = $ig
+    $row.Add_MouseEnter({ param($s, $e) try { if ($s.Tag.Path -ne $script:LfSel) { $s.Background = (New-WpfBrush '#F4F5F7') } } catch { } })
+    $row.Add_MouseLeave({ param($s, $e) try { if ($s.Tag.Path -ne $script:LfSel) { $s.Background = (New-WpfBrush '#FFFFFF') } } catch { } })
+    $row.Add_MouseLeftButtonDown({
+      param($s, $e)
+      try {
+        $script:LfSel = [string]$s.Tag.Path
+        foreach ($ch in $script:LfList.Children) {
+          if ($ch -is [System.Windows.Controls.Border] -and $ch.Tag) {
+            $ch.Background = (New-WpfBrush $(if ($ch.Tag.Path -eq $script:LfSel) { '#EAF3FF' } else { '#FFFFFF' }))
+          }
+        }
+      } catch { }
+    })
+    $menu = New-Object System.Windows.Controls.ContextMenu
+    $miOpen = New-Object System.Windows.Controls.MenuItem; $miOpen.Header = '打开所在文件夹'; $miOpen.Tag = $It
+    $miOpen.Add_Click({ $it = $_.Source.Tag; Open-InExplorer -Path $it.Path -Select })
+    $miCopy = New-Object System.Windows.Controls.MenuItem; $miCopy.Header = '复制路径'; $miCopy.Tag = $It
+    $miCopy.Add_Click({ $it = $_.Source.Tag; try { [System.Windows.Clipboard]::SetText([string]$it.Path) } catch { } })
+    $miDel = New-Object System.Windows.Controls.MenuItem; $miDel.Header = '删除到回收站'; $miDel.Tag = $It
+    $miDel.Add_Click({ Remove-LfFiles -Paths @([string]$_.Source.Tag.Path) })
+    $null = $menu.Items.Add($miOpen); $null = $menu.Items.Add($miCopy); $null = $menu.Items.Add($miDel)
+    $row.ContextMenu = $menu
+    return $row
+  }
+
+  # ===== 渲染（以 LfRows 为准；供扫描完成/排序/删除后刷新） =====
+  function script:Render-Lf {
+    $script:LfList.Children.Clear()
+    foreach ($r in $script:LfRows) { $null = $script:LfList.Children.Add((New-LfRow -It $r)) }
+    $totalBytes = 0L
+    foreach ($r in $script:LfRows) { $totalBytes += [long]$r.Size }
+    $script:LblLTotal.Text = ('共 {0} 个文件 / {1}' -f $script:LfRows.Count, (Format-Bytes $totalBytes))
+  }
+
+  # ===== 删除（右键 / 页脚共用；以"删前存在删后不在"判成功） =====
+  function script:Remove-LfFiles {
+    param([string[]]$Paths)
+    if ($Paths.Count -eq 0) { return }
+    $r = [System.Windows.MessageBox]::Show(('确定将选中的 {0} 个大文件删除到回收站？' -f $Paths.Count), '确认删除', [System.Windows.MessageBoxButton]::YesNo, [System.Windows.MessageBoxImage]::Warning)
+    if ($r -ne [System.Windows.MessageBoxResult]::Yes) { return }
+    $rel = 0L; $ok = 0; $gone = @()
+    foreach ($p in $Paths) {
+      $existed = Test-Path -LiteralPath $p
+      $b = Remove-UserPathToRecycle $p
+      if ($existed -and -not (Test-Path -LiteralPath $p)) { $ok++; $rel += $b; $gone += $p }
+    }
+    Log-Line ('大文件删除: 成功 {0}/{1}, 释放 {2}' -f $ok, $Paths.Count, (Format-Bytes $rel))
+    if ($gone.Count -gt 0) {
+      $script:LfRows = @($script:LfRows | Where-Object { $gone -notcontains $_.Path })
+      if ($script:LfSel -and ($gone -contains $script:LfSel)) { $script:LfSel = $null }
+      Render-Lf
+    }
+    try {
+      $null = [System.Windows.MessageBox]::Show(('已删除 {0} 个大文件，释放 {1}；被占用/受保护的文件自动跳过。' -f $ok, (Format-Bytes $rel)), '完成', [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Information)
+    } catch { }
+  }
+
+  # ===== 扫描 worker =====
+  $script:LfWorker = New-Object System.ComponentModel.BackgroundWorker
+  $script:LfWorker.WorkerSupportsCancellation = $true
+  $script:LfWorker.WorkerReportsProgress = $true
+  $lfDoWork = {
+    param($s, $e)
+    $a = $e.Argument
+    $list = Get-LargeFiles -Root $a.Root -Threshold $a.Threshold -W $s
+    if ($s.CancellationPending) { $e.Cancel = $true; return }
+    $e.Result = $list
+  }
+  Register-WorkerBody -Worker $script:LfWorker -Name 'Lf' -ScriptBlock $lfDoWork
+  $script:LfWorker.add_ProgressChanged({
+    param($s, $e)
+    try { $script:LblL.Text = [string]$e.UserState } catch { }
+  })
+  $script:LfWorker.add_RunWorkerCompleted({
+    param($s, $e)
+    try {
+      $script:BtnScanL.IsEnabled = $true; $script:BtnStopL.IsEnabled = $false
+      $script:ProgL.IsIndeterminate = $false; $script:ProgL.Value = 0
+      if ($e.Error) { $script:LblL.Text = '扫描出错'; Log-Line ('大文件扫描出错: ' + $e.Error.Message); return }
+      if ($e.Cancelled) { $script:LblL.Text = '已取消'; return }
+      $script:LfRows = @($e.Result)
+      $script:LfSel = $null
+      Render-Lf
+      $script:LblL.Text = '完成'
+      Log-Line ('大文件扫描完成: {0} 个' -f $script:LfRows.Count)
+    } catch { Log-Line ('大文件完成处理出错: ' + $_.Exception.Message) }
+  })
+
+  $script:BtnScanL.Add_Click({
+    $drive = [string]$script:CmbDriveL.SelectedItem
+    if (-not $drive) {
+      try { $null = [System.Windows.MessageBox]::Show('请先选择磁盘。', '提示', [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Information) } catch { }
+      return
+    }
+    $mb = switch ([string]$script:CmbThL.SelectedItem) { '300 MB' { 300 } '500 MB' { 500 } '1 GB' { 1024 } default { 100 } }
+    $script:BtnScanL.IsEnabled = $false; $script:BtnStopL.IsEnabled = $true
+    $script:ProgL.IsIndeterminate = $true; $script:LblL.Text = '扫描中...'
+    $script:LfList.Children.Clear(); $script:LfRows = @(); $script:LfSel = $null
+    $script:LblLTotal.Text = '共 0 个文件'
+    Log-Line ('大文件扫描开始: {0} >= {1}' -f $drive, $script:CmbThL.SelectedItem)
+    $script:LfWorker.RunWorkerAsync(@{ Root = ($drive + '\'); Threshold = ([long]$mb * 1024 * 1024) })
+  })
+  $script:BtnStopL.Add_Click({ if ($script:LfWorker) { $script:LfWorker.CancelAsync() } })
+  $script:BtnDelL.Add_Click({
+    if (-not $script:LfSel) {
+      try { $null = [System.Windows.MessageBox]::Show('请先点击选中要删除的大文件。', '提示', [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Information) } catch { }
+      return
+    }
+    Remove-LfFiles -Paths @($script:LfSel)
+  })
+
+  return $g
+}
 
 # ---------- Tab: 空文件夹清理 ----------
 function Get-EmptyDirs {
@@ -1940,12 +2236,12 @@ function New-EmptyDirPage {
     $row.Add_MouseEnter({ param($s, $e) try { $s.Background = (New-WpfBrush '#F4F5F7') } catch { } })
     $row.Add_MouseLeave({ param($s, $e) try { $s.Background = (New-WpfBrush '#FFFFFF') } catch { } })
     $menu = New-Object System.Windows.Controls.ContextMenu
-    $miOpen = New-Object System.Windows.Controls.MenuItem; $miOpen.Header = '打开所在文件夹'
-    $miOpen.Add_Click({ Open-InExplorer -Path $It.Path -Select })
-    $miCopy = New-Object System.Windows.Controls.MenuItem; $miCopy.Header = '复制路径'
-    $miCopy.Add_Click({ try { [System.Windows.Clipboard]::SetText($It.Path) } catch { } })
-    $miDel = New-Object System.Windows.Controls.MenuItem; $miDel.Header = '删除到回收站'
-    $miDel.Add_Click({ Remove-EmptyDirs -Items @($It) })
+    $miOpen = New-Object System.Windows.Controls.MenuItem; $miOpen.Header = '打开所在文件夹'; $miOpen.Tag = $It
+    $miOpen.Add_Click({ $it = $_.Source.Tag; Open-InExplorer -Path $it.Path -Select })
+    $miCopy = New-Object System.Windows.Controls.MenuItem; $miCopy.Header = '复制路径'; $miCopy.Tag = $It
+    $miCopy.Add_Click({ $it = $_.Source.Tag; try { [System.Windows.Clipboard]::SetText([string]$it.Path) } catch { } })
+    $miDel = New-Object System.Windows.Controls.MenuItem; $miDel.Header = '删除到回收站'; $miDel.Tag = $It
+    $miDel.Add_Click({ Remove-EmptyDirs -Items @($_.Source.Tag) })
     $null = $menu.Items.Add($miOpen); $null = $menu.Items.Add($miCopy); $null = $menu.Items.Add($miDel)
     $row.ContextMenu = $menu
     return $row
@@ -2139,7 +2435,201 @@ function Get-InstalledSoftware {
   return $rows
 }
 
-function New-SoftwarePage { return (New-WpfPlaceholder -Title '软件占用' -Msg '已安装软件与体积（WPF 重构中）') }
+function New-SoftwarePage {
+  # 布局：工具栏 44 | 表头+列表；信息展示为主，不提供卸载/删除
+  $g = New-Object System.Windows.Controls.Grid
+  $r0 = New-Object System.Windows.Controls.RowDefinition; $r0.Height = [System.Windows.GridLength]::new(44)
+  $r1 = New-Object System.Windows.Controls.RowDefinition; $r1.Height = [System.Windows.GridLength]::new(1, [System.Windows.GridUnitType]::Star)
+  $null = $g.RowDefinitions.Add($r0); $null = $g.RowDefinitions.Add($r1)
+
+  # ===== 工具栏 =====
+  $top = New-Object System.Windows.Controls.Border
+  $top.Background = (New-WpfBrush '#FFFFFF'); $top.BorderBrush = (New-WpfBrush $script:Theme.CardLine); $top.BorderThickness = (New-WpfThickness 0 0 0 1)
+  $tg = New-Object System.Windows.Controls.Grid
+  $null = $tg.ColumnDefinitions.Add((New-Object System.Windows.Controls.ColumnDefinition))   # 刷新
+  $null = $tg.ColumnDefinitions.Add((New-Object System.Windows.Controls.ColumnDefinition))   # 计算实际占用
+  $null = $tg.ColumnDefinitions.Add((New-Object System.Windows.Controls.ColumnDefinition))   # 状态 *
+  $btnSoftRefresh = New-Object System.Windows.Controls.Button
+  $btnSoftRefresh.Content = '刷新列表'; $btnSoftRefresh.Margin = (New-WpfThickness 12 0 0 0)
+  $btnSoftRefresh.Background = (New-WpfBrush $script:Theme.Primary); $btnSoftRefresh.Foreground = (New-WpfBrush '#FFFFFF')
+  $btnSoftRefresh.Padding = (New-WpfThickness 12 4 12 4)
+  $null = $tg.Children.Add($btnSoftRefresh)
+  $script:BtnSoftReal = New-Object System.Windows.Controls.Button
+  $script:BtnSoftReal.Content = '计算实际占用'; $script:BtnSoftReal.Margin = (New-WpfThickness 10 0 0 0)
+  $script:BtnSoftReal.Padding = (New-WpfThickness 12 4 12 4)
+  [System.Windows.Controls.Grid]::SetColumn($script:BtnSoftReal, 1); $null = $tg.Children.Add($script:BtnSoftReal)
+  $script:LblSoft = New-Object System.Windows.Controls.TextBlock
+  $script:LblSoft.Text = '信息展示为主，不提供卸载。'; $script:LblSoft.VerticalAlignment = 'Center'; $script:LblSoft.Margin = (New-WpfThickness 16 0 12 0)
+  $script:LblSoft.Foreground = (New-WpfBrush $script:Theme.Disabled); $script:LblSoft.FontSize = 12
+  $script:LblSoft.TextTrimming = 'CharacterEllipsis'
+  [System.Windows.Controls.Grid]::SetColumn($script:LblSoft, 2); $null = $tg.Children.Add($script:LblSoft)
+  $top.Child = $tg
+  [System.Windows.Controls.Grid]::SetRow($top, 0); $null = $g.Children.Add($top)
+
+  # ===== 表头 + 列表 =====
+  $mid = New-Object System.Windows.Controls.Grid
+  $mh = New-Object System.Windows.Controls.RowDefinition; $mh.Height = [System.Windows.GridLength]::new(30)
+  $ml = New-Object System.Windows.Controls.RowDefinition; $ml.Height = [System.Windows.GridLength]::new(1, [System.Windows.GridUnitType]::Star)
+  $null = $mid.RowDefinitions.Add($mh); $null = $mid.RowDefinitions.Add($ml)
+  $hdr = New-Object System.Windows.Controls.Border
+  $hdr.Background = (New-WpfBrush '#F8F9FA'); $hdr.BorderBrush = (New-WpfBrush '#F0F1F3'); $hdr.BorderThickness = (New-WpfThickness 0 0 0 1)
+  $hg = New-Object System.Windows.Controls.Grid
+  $null = $hg.ColumnDefinitions.Add((New-Object System.Windows.Controls.ColumnDefinition))                       # 名称 *
+  $null = $hg.ColumnDefinitions.Add((New-Object System.Windows.Controls.ColumnDefinition)); $hg.ColumnDefinitions[1].Width = [System.Windows.GridLength]::new(150)
+  $null = $hg.ColumnDefinitions.Add((New-Object System.Windows.Controls.ColumnDefinition)); $hg.ColumnDefinitions[2].Width = [System.Windows.GridLength]::new(110)
+  $null = $hg.ColumnDefinitions.Add((New-Object System.Windows.Controls.ColumnDefinition))                       # 安装位置 *
+  $null = $hg.ColumnDefinitions.Add((New-Object System.Windows.Controls.ColumnDefinition)); $hg.ColumnDefinitions[4].Width = [System.Windows.GridLength]::new(90)
+  $null = $hg.ColumnDefinitions.Add((New-Object System.Windows.Controls.ColumnDefinition)); $hg.ColumnDefinitions[5].Width = [System.Windows.GridLength]::new(110)
+  $hCols = @('名称', '发布者', '版本', '安装位置', '注册大小', '实际占用')
+  $hKeys = @(
+    { param($r) $r.Name },
+    { param($r) $r.Publisher },
+    { param($r) $r.Version },
+    { param($r) $r.Location },
+    { param($r) $r.RegKB },
+    { param($r) $r.RealBytes }
+  )
+  $script:SoftSort = @()
+  for ($ci = 0; $ci -lt $hCols.Count; $ci++) {
+    $ht = New-Object System.Windows.Controls.TextBlock
+    $ht.Text = $hCols[$ci]; $ht.FontSize = 11; $ht.FontWeight = [System.Windows.FontWeights]::Bold
+    $ht.Foreground = (New-WpfBrush $script:Theme.SubText); $ht.VerticalAlignment = 'Center'
+    $ht.Margin = (New-WpfThickness 12 0 6 0)
+    [System.Windows.Controls.Grid]::SetColumn($ht, $ci)
+    $null = $hg.Children.Add($ht)
+    Add-WpfSortHeader -Header $ht -VarName 'SoftRows' -Key $hKeys[$ci] -Render { script:Render-Soft }
+    $script:SoftSort += $ht
+  }
+  $hdr.Child = $hg
+  [System.Windows.Controls.Grid]::SetRow($hdr, 0); $null = $mid.Children.Add($hdr)
+  $scroll = New-Object System.Windows.Controls.ScrollViewer
+  $scroll.VerticalScrollBarVisibility = 'Auto'; $scroll.HorizontalScrollBarVisibility = 'Disabled'
+  $scroll.Background = (New-WpfBrush '#FFFFFF')
+  $script:SoftList = New-Object System.Windows.Controls.StackPanel
+  $scroll.Content = $script:SoftList
+  [System.Windows.Controls.Grid]::SetRow($scroll, 1); $null = $mid.Children.Add($scroll)
+  [System.Windows.Controls.Grid]::SetRow($mid, 1); $null = $g.Children.Add($mid)
+
+  # ===== 状态 =====
+  $script:SoftRows = @()   # 当前行数据（刷新/排序/实际占用都写回这里）
+  $script:SoftSel = $null  # 选中的行对象
+
+  # ===== 行助手（6 列 + 单选高亮 + 右键菜单） =====
+  function script:New-SoftRow {
+    param($It)
+    $realTxt = if ($It.RealBytes -gt 0) { Format-Bytes $It.RealBytes } else { '' }
+    $regTxt = if ($It.RegKB -gt 0) { Format-Bytes ($It.RegKB * 1024) } else { '' }
+    $row = New-Object System.Windows.Controls.Border
+    $row.Tag = $It
+    $row.Background = (New-WpfBrush $(if ($It -eq $script:SoftSel) { '#EAF3FF' } else { '#FFFFFF' }))
+    $row.BorderBrush = (New-WpfBrush '#F0F1F3'); $row.BorderThickness = (New-WpfThickness 0 0 0 1)
+    $row.Padding = (New-WpfThickness 12 5 12 5)
+    $ig = New-Object System.Windows.Controls.Grid
+    $null = $ig.ColumnDefinitions.Add((New-Object System.Windows.Controls.ColumnDefinition))
+    $null = $ig.ColumnDefinitions.Add((New-Object System.Windows.Controls.ColumnDefinition)); $ig.ColumnDefinitions[1].Width = [System.Windows.GridLength]::new(150)
+    $null = $ig.ColumnDefinitions.Add((New-Object System.Windows.Controls.ColumnDefinition)); $ig.ColumnDefinitions[2].Width = [System.Windows.GridLength]::new(110)
+    $null = $ig.ColumnDefinitions.Add((New-Object System.Windows.Controls.ColumnDefinition))
+    $null = $ig.ColumnDefinitions.Add((New-Object System.Windows.Controls.ColumnDefinition)); $ig.ColumnDefinitions[4].Width = [System.Windows.GridLength]::new(90)
+    $null = $ig.ColumnDefinitions.Add((New-Object System.Windows.Controls.ColumnDefinition)); $ig.ColumnDefinitions[5].Width = [System.Windows.GridLength]::new(110)
+    $tName = New-Object System.Windows.Controls.TextBlock
+    $tName.Text = $It.Name; $tName.FontSize = 13; $tName.VerticalAlignment = 'Center'; $tName.TextTrimming = 'CharacterEllipsis'
+    $null = $ig.Children.Add($tName)
+    $tPub = New-Object System.Windows.Controls.TextBlock
+    $tPub.Text = $It.Publisher; $tPub.FontSize = 12; $tPub.VerticalAlignment = 'Center'; $tPub.TextTrimming = 'CharacterEllipsis'
+    $tPub.Foreground = (New-WpfBrush $script:Theme.SubText); [System.Windows.Controls.Grid]::SetColumn($tPub, 1); $null = $ig.Children.Add($tPub)
+    $tVer = New-Object System.Windows.Controls.TextBlock
+    $tVer.Text = $It.Version; $tVer.FontSize = 12; $tVer.VerticalAlignment = 'Center'; $tVer.TextTrimming = 'CharacterEllipsis'
+    $tVer.Foreground = (New-WpfBrush $script:Theme.SubText); [System.Windows.Controls.Grid]::SetColumn($tVer, 2); $null = $ig.Children.Add($tVer)
+    $tLoc = New-Object System.Windows.Controls.TextBlock
+    $tLoc.Text = $It.Location; $tLoc.FontSize = 11; $tLoc.VerticalAlignment = 'Center'; $tLoc.TextTrimming = 'CharacterEllipsis'
+    $tLoc.Foreground = (New-WpfBrush $script:Theme.Disabled); [System.Windows.Controls.Grid]::SetColumn($tLoc, 3); $null = $ig.Children.Add($tLoc)
+    $tReg = New-Object System.Windows.Controls.TextBlock
+    $tReg.Text = $regTxt; $tReg.FontSize = 12; $tReg.VerticalAlignment = 'Center'; $tReg.HorizontalAlignment = 'Right'
+    $tReg.Foreground = (New-WpfBrush $script:Theme.SubText); [System.Windows.Controls.Grid]::SetColumn($tReg, 4); $null = $ig.Children.Add($tReg)
+    $tReal = New-Object System.Windows.Controls.TextBlock
+    $tReal.Text = $realTxt; $tReal.FontSize = 12; $tReal.VerticalAlignment = 'Center'; $tReal.HorizontalAlignment = 'Right'
+    $tReal.Foreground = (New-WpfBrush $script:Theme.Text); [System.Windows.Controls.Grid]::SetColumn($tReal, 5); $null = $ig.Children.Add($tReal)
+    $row.Child = $ig
+    $row.Add_MouseEnter({ param($s, $e) try { if ($s.Tag -ne $script:SoftSel) { $s.Background = (New-WpfBrush '#F4F5F7') } } catch { } })
+    $row.Add_MouseLeave({ param($s, $e) try { if ($s.Tag -ne $script:SoftSel) { $s.Background = (New-WpfBrush '#FFFFFF') } } catch { } })
+    $row.Add_MouseLeftButtonDown({
+      param($s, $e)
+      try {
+        $script:SoftSel = $s.Tag
+        foreach ($ch in $script:SoftList.Children) {
+          if ($ch -is [System.Windows.Controls.Border] -and $ch.Tag) {
+            $ch.Background = (New-WpfBrush $(if ($ch.Tag -eq $script:SoftSel) { '#EAF3FF' } else { '#FFFFFF' }))
+          }
+        }
+      } catch { }
+    })
+    $menu = New-Object System.Windows.Controls.ContextMenu
+    $miOpen = New-Object System.Windows.Controls.MenuItem; $miOpen.Header = '打开安装目录'; $miOpen.Tag = $It
+    $miOpen.Add_Click({ $it = $_.Source.Tag; if ($it.Location) { Open-InExplorer -Path $it.Location } })
+    $miCopy = New-Object System.Windows.Controls.MenuItem; $miCopy.Header = '复制安装路径'; $miCopy.Tag = $It
+    $miCopy.Add_Click({ $it = $_.Source.Tag; try { [System.Windows.Clipboard]::SetText([string]$it.Location) } catch { } })
+    $null = $menu.Items.Add($miOpen); $null = $menu.Items.Add($miCopy)
+    $row.ContextMenu = $menu
+    return $row
+  }
+
+  # ===== 渲染（以 SoftRows 为准） =====
+  function script:Render-Soft {
+    $script:SoftList.Children.Clear()
+    foreach ($s in $script:SoftRows) { $null = $script:SoftList.Children.Add((New-SoftRow -It $s)) }
+    $script:LblSoft.Text = ('共 {0} 个已安装软件' -f $script:SoftRows.Count)
+  }
+
+  # ===== 计算实际占用 worker（单行；行对象跨 runspace 按引用传递，写回即刷新） =====
+  $script:SoftWorker = New-Object System.ComponentModel.BackgroundWorker
+  $softDoWork = {
+    param($s, $e)
+    $row = $e.Argument
+    $bytes = 0L
+    if ($row.Location -and (Test-Path -LiteralPath $row.Location)) {
+      try { $bytes = Measure-DirBytes $row.Location } catch { $bytes = 0L }
+    }
+    $e.Result = @{ Row = $row; Bytes = $bytes }
+  }
+  Register-WorkerBody -Worker $script:SoftWorker -Name 'Soft' -ScriptBlock $softDoWork
+  $script:SoftWorker.add_RunWorkerCompleted({
+    param($s, $e)
+    try {
+      $script:BtnSoftReal.IsEnabled = $true
+      if ($e.Error) { Log-Line ('实际占用出错: ' + $e.Error.Message); return }
+      $r = $e.Result
+      if ($r -and $r.Row) {
+        $r.Row.RealBytes = $r.Bytes
+        Render-Soft
+        Log-Line ('实际占用: {0} = {1}' -f $r.Row.Name, (Format-Bytes $r.Bytes))
+      }
+    } catch { Log-Line ('实际占用完成处理出错: ' + $_.Exception.Message) }
+  })
+
+  $btnSoftRefresh.Add_Click({ Fill-SoftwareList; Log-Line ('软件列表已刷新: {0} 项' -f $script:SoftRows.Count) })
+  $script:BtnSoftReal.Add_Click({
+    if (-not $script:SoftSel) {
+      try { $null = [System.Windows.MessageBox]::Show('请先点击选中要计算占用的一项软件。', '提示', [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Information) } catch { }
+      return
+    }
+    if (-not $script:SoftSel.Location -or -not (Test-Path -LiteralPath $script:SoftSel.Location)) {
+      try { $null = [System.Windows.MessageBox]::Show('该项未记录安装位置，无法计算实际占用。', '提示', [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Information) } catch { }
+      return
+    }
+    $script:BtnSoftReal.IsEnabled = $false
+    $script:SoftWorker.RunWorkerAsync($script:SoftSel)
+  })
+
+  # ===== 填充列表（构造即刷；供刷新按钮复用） =====
+  function script:Fill-SoftwareList {
+    $script:SoftRows = @(Get-InstalledSoftware)
+    $script:SoftSel = $null
+    Render-Soft
+  }
+  Fill-SoftwareList
+
+  return $g
+}
 
 # ---------- Tab: 重复文件检测 ----------
 function Get-DupeGroups {
@@ -2221,7 +2711,250 @@ function Get-DupeGroups {
   return $result
 }
 
-function New-DupeFilesPage { return (New-WpfPlaceholder -Title '重复文件' -Msg '按哈希查找重复文件（WPF 重构中）') }
+function New-DupeFilesPage {
+  # 布局：工具栏 44 | 表头+列表 | 页脚 44；勾选行（默认每组保留 1 个）+ 表头点击排序
+  $g = New-Object System.Windows.Controls.Grid
+  $r0 = New-Object System.Windows.Controls.RowDefinition; $r0.Height = [System.Windows.GridLength]::new(44)
+  $r1 = New-Object System.Windows.Controls.RowDefinition; $r1.Height = [System.Windows.GridLength]::new(1, [System.Windows.GridUnitType]::Star)
+  $r2 = New-Object System.Windows.Controls.RowDefinition; $r2.Height = [System.Windows.GridLength]::new(44)
+  $null = $g.RowDefinitions.Add($r0); $null = $g.RowDefinitions.Add($r1); $null = $g.RowDefinitions.Add($r2)
+
+  # ===== 工具栏 =====
+  $top = New-Object System.Windows.Controls.Border
+  $top.Background = (New-WpfBrush '#FFFFFF'); $top.BorderBrush = (New-WpfBrush $script:Theme.CardLine); $top.BorderThickness = (New-WpfThickness 0 0 0 1)
+  $tg = New-Object System.Windows.Controls.Grid
+  $null = $tg.ColumnDefinitions.Add((New-Object System.Windows.Controls.ColumnDefinition))   # 目录标签
+  $null = $tg.ColumnDefinitions.Add((New-Object System.Windows.Controls.ColumnDefinition))   # 目录框 *
+  $null = $tg.ColumnDefinitions.Add((New-Object System.Windows.Controls.ColumnDefinition))   # 浏览
+  $null = $tg.ColumnDefinitions.Add((New-Object System.Windows.Controls.ColumnDefinition))   # 开始检测
+  $null = $tg.ColumnDefinitions.Add((New-Object System.Windows.Controls.ColumnDefinition))   # 停止
+  $null = $tg.ColumnDefinitions.Add((New-Object System.Windows.Controls.ColumnDefinition))   # 进度
+  $null = $tg.ColumnDefinitions.Add((New-Object System.Windows.Controls.ColumnDefinition))   # 状态
+  $lblDir = New-Object System.Windows.Controls.TextBlock
+  $lblDir.Text = '目录:'; $lblDir.VerticalAlignment = 'Center'; $lblDir.Margin = (New-WpfThickness 12 0 0 0)
+  $null = $tg.Children.Add($lblDir)
+  $script:TxtDupDir = New-Object System.Windows.Controls.TextBox
+  $script:TxtDupDir.Text = $env:USERPROFILE; $script:TxtDupDir.VerticalAlignment = 'Center'; $script:TxtDupDir.Margin = (New-WpfThickness 8 0 0 0)
+  $script:TxtDupDir.Padding = (New-WpfThickness 4 2 4 2)
+  [System.Windows.Controls.Grid]::SetColumn($script:TxtDupDir, 1); $null = $tg.Children.Add($script:TxtDupDir)
+  $btnDupBrowse = New-Object System.Windows.Controls.Button
+  $btnDupBrowse.Content = '浏览'; $btnDupBrowse.Margin = (New-WpfThickness 8 0 0 0); $btnDupBrowse.Padding = (New-WpfThickness 8 4 8 4)
+  [System.Windows.Controls.Grid]::SetColumn($btnDupBrowse, 2); $null = $tg.Children.Add($btnDupBrowse)
+  $script:BtnDupScan = New-Object System.Windows.Controls.Button
+  $script:BtnDupScan.Content = '开始检测'; $script:BtnDupScan.Margin = (New-WpfThickness 10 0 0 0)
+  $script:BtnDupScan.Background = (New-WpfBrush $script:Theme.Primary); $script:BtnDupScan.Foreground = (New-WpfBrush '#FFFFFF')
+  $script:BtnDupScan.Padding = (New-WpfThickness 12 4 12 4)
+  [System.Windows.Controls.Grid]::SetColumn($script:BtnDupScan, 3); $null = $tg.Children.Add($script:BtnDupScan)
+  $script:BtnDupStop = New-Object System.Windows.Controls.Button
+  $script:BtnDupStop.Content = '停止'; $script:BtnDupStop.IsEnabled = $false; $script:BtnDupStop.Margin = (New-WpfThickness 8 0 0 0)
+  $script:BtnDupStop.Padding = (New-WpfThickness 10 4 10 4)
+  [System.Windows.Controls.Grid]::SetColumn($script:BtnDupStop, 4); $null = $tg.Children.Add($script:BtnDupStop)
+  $script:ProgD = New-Object System.Windows.Controls.ProgressBar
+  $script:ProgD.Width = 200; $script:ProgD.Height = 8; $script:ProgD.VerticalAlignment = 'Center'; $script:ProgD.Margin = (New-WpfThickness 14 0 0 0)
+  $script:ProgD.Foreground = (New-WpfBrush $script:Theme.Primary); $script:ProgD.Background = (New-WpfBrush '#EEF0F2')
+  [System.Windows.Controls.Grid]::SetColumn($script:ProgD, 5); $null = $tg.Children.Add($script:ProgD)
+  $script:LblD = New-Object System.Windows.Controls.TextBlock
+  $script:LblD.Text = '就绪'; $script:LblD.VerticalAlignment = 'Center'; $script:LblD.Margin = (New-WpfThickness 12 0 0 0)
+  $script:LblD.Foreground = (New-WpfBrush $script:Theme.SubText); $script:LblD.FontSize = 12
+  [System.Windows.Controls.Grid]::SetColumn($script:LblD, 6); $null = $tg.Children.Add($script:LblD)
+  $top.Child = $tg
+  [System.Windows.Controls.Grid]::SetRow($top, 0); $null = $g.Children.Add($top)
+
+  # ===== 表头 + 列表 =====
+  $mid = New-Object System.Windows.Controls.Grid
+  $mh = New-Object System.Windows.Controls.RowDefinition; $mh.Height = [System.Windows.GridLength]::new(30)
+  $ml = New-Object System.Windows.Controls.RowDefinition; $ml.Height = [System.Windows.GridLength]::new(1, [System.Windows.GridUnitType]::Star)
+  $null = $mid.RowDefinitions.Add($mh); $null = $mid.RowDefinitions.Add($ml)
+  $hdr = New-Object System.Windows.Controls.Border
+  $hdr.Background = (New-WpfBrush '#F8F9FA'); $hdr.BorderBrush = (New-WpfBrush '#F0F1F3'); $hdr.BorderThickness = (New-WpfThickness 0 0 0 1)
+  $hg = New-Object System.Windows.Controls.Grid
+  $null = $hg.ColumnDefinitions.Add((New-Object System.Windows.Controls.ColumnDefinition)); $hg.ColumnDefinitions[0].Width = [System.Windows.GridLength]::new(26)
+  $null = $hg.ColumnDefinitions.Add((New-Object System.Windows.Controls.ColumnDefinition)); $hg.ColumnDefinitions[1].Width = [System.Windows.GridLength]::new(60)
+  $null = $hg.ColumnDefinitions.Add((New-Object System.Windows.Controls.ColumnDefinition)); $hg.ColumnDefinitions[2].Width = [System.Windows.GridLength]::new(110)
+  $null = $hg.ColumnDefinitions.Add((New-Object System.Windows.Controls.ColumnDefinition)); $hg.ColumnDefinitions[3].Width = [System.Windows.GridLength]::new(80)
+  $null = $hg.ColumnDefinitions.Add((New-Object System.Windows.Controls.ColumnDefinition))   # 路径 *
+  $hCols = @('', '组', '大小', '状态', '路径')
+  $hKeys = @(
+    { param($r) 0 },
+    { param($r) $r.Group },
+    { param($r) $r.Size },
+    { param($r) if ($r.Keep) { 1 } else { 0 } },
+    { param($r) $r.Path }
+  )
+  $script:DupSort = @()
+  for ($ci = 1; $ci -lt $hCols.Count; $ci++) {
+    $ht = New-Object System.Windows.Controls.TextBlock
+    $ht.Text = $hCols[$ci]; $ht.FontSize = 11; $ht.FontWeight = [System.Windows.FontWeights]::Bold
+    $ht.Foreground = (New-WpfBrush $script:Theme.SubText); $ht.VerticalAlignment = 'Center'
+    $ht.Margin = (New-WpfThickness 12 0 6 0)
+    [System.Windows.Controls.Grid]::SetColumn($ht, $ci)
+    $null = $hg.Children.Add($ht)
+    Add-WpfSortHeader -Header $ht -VarName 'DupRows' -Key $hKeys[$ci] -Render { script:Render-Dup }
+    $script:DupSort += $ht
+  }
+  $hdr.Child = $hg
+  [System.Windows.Controls.Grid]::SetRow($hdr, 0); $null = $mid.Children.Add($hdr)
+  $scroll = New-Object System.Windows.Controls.ScrollViewer
+  $scroll.VerticalScrollBarVisibility = 'Auto'; $scroll.HorizontalScrollBarVisibility = 'Disabled'
+  $scroll.Background = (New-WpfBrush '#FFFFFF')
+  $script:DupList = New-Object System.Windows.Controls.StackPanel
+  $scroll.Content = $script:DupList
+  [System.Windows.Controls.Grid]::SetRow($scroll, 1); $null = $mid.Children.Add($scroll)
+  [System.Windows.Controls.Grid]::SetRow($mid, 1); $null = $g.Children.Add($mid)
+
+  # ===== 页脚 =====
+  $foot = New-Object System.Windows.Controls.Border
+  $foot.Background = (New-WpfBrush '#FFFFFF'); $foot.BorderBrush = (New-WpfBrush $script:Theme.CardLine); $foot.BorderThickness = (New-WpfThickness 0 1 0 0)
+  $fg = New-Object System.Windows.Controls.Grid
+  $null = $fg.ColumnDefinitions.Add((New-Object System.Windows.Controls.ColumnDefinition))
+  $null = $fg.ColumnDefinitions.Add((New-Object System.Windows.Controls.ColumnDefinition))
+  $script:LblDupInfo = New-Object System.Windows.Controls.TextBlock
+  $script:LblDupInfo.Text = '默认每组保留 1 个副本，其余已勾选待删除。'
+  $script:LblDupInfo.VerticalAlignment = 'Center'; $script:LblDupInfo.Margin = (New-WpfThickness 12 0 0 0); $script:LblDupInfo.FontSize = 12
+  $script:LblDupInfo.Foreground = (New-WpfBrush $script:Theme.SubText); $script:LblDupInfo.TextTrimming = 'CharacterEllipsis'
+  $null = $fg.Children.Add($script:LblDupInfo)
+  $script:BtnDupDel = New-Object System.Windows.Controls.Button
+  $script:BtnDupDel.Content = '删除勾选(回收站)'
+  $script:BtnDupDel.Background = (New-WpfBrush $script:Theme.Red); $script:BtnDupDel.Foreground = (New-WpfBrush '#FFFFFF')
+  $script:BtnDupDel.Padding = (New-WpfThickness 12 4 12 4); $script:BtnDupDel.HorizontalAlignment = 'Right'; $script:BtnDupDel.Margin = (New-WpfThickness 0 0 12 0)
+  [System.Windows.Controls.Grid]::SetColumn($script:BtnDupDel, 1); $null = $fg.Children.Add($script:BtnDupDel)
+  $foot.Child = $fg
+  [System.Windows.Controls.Grid]::SetRow($foot, 2); $null = $g.Children.Add($foot)
+
+  # ===== 状态 =====
+  $script:DupRows = @()       # 当前行数据（排序/删除都写回这里）
+  $script:DupCheckboxes = @() # 每行勾选框（删除时收集勾选）
+
+  # ===== 行助手（勾选框 + 4 列） =====
+  function script:New-DupRow {
+    param($It)
+    $row = New-Object System.Windows.Controls.Border
+    $row.Tag = $It
+    $row.Background = (New-WpfBrush '#FFFFFF')
+    $row.BorderBrush = (New-WpfBrush '#F0F1F3'); $row.BorderThickness = (New-WpfThickness 0 0 0 1)
+    $row.Padding = (New-WpfThickness 12 5 12 5)
+    $ig = New-Object System.Windows.Controls.Grid
+    $null = $ig.ColumnDefinitions.Add((New-Object System.Windows.Controls.ColumnDefinition)); $ig.ColumnDefinitions[0].Width = [System.Windows.GridLength]::new(26)
+    $null = $ig.ColumnDefinitions.Add((New-Object System.Windows.Controls.ColumnDefinition)); $ig.ColumnDefinitions[1].Width = [System.Windows.GridLength]::new(60)
+    $null = $ig.ColumnDefinitions.Add((New-Object System.Windows.Controls.ColumnDefinition)); $ig.ColumnDefinitions[2].Width = [System.Windows.GridLength]::new(110)
+    $null = $ig.ColumnDefinitions.Add((New-Object System.Windows.Controls.ColumnDefinition)); $ig.ColumnDefinitions[3].Width = [System.Windows.GridLength]::new(80)
+    $null = $ig.ColumnDefinitions.Add((New-Object System.Windows.Controls.ColumnDefinition))
+    $cb = New-Object System.Windows.Controls.CheckBox
+    $cb.Tag = $It; $cb.VerticalAlignment = 'Center'; $cb.IsChecked = (-not $It.Keep)
+    $null = $ig.Children.Add($cb)
+    $script:DupCheckboxes += $cb
+    $tGrp = New-Object System.Windows.Controls.TextBlock
+    $tGrp.Text = [string]$It.Group; $tGrp.FontSize = 12; $tGrp.VerticalAlignment = 'Center'
+    $tGrp.Foreground = (New-WpfBrush $script:Theme.SubText); [System.Windows.Controls.Grid]::SetColumn($tGrp, 1); $null = $ig.Children.Add($tGrp)
+    $tSize = New-Object System.Windows.Controls.TextBlock
+    $tSize.Text = Format-Bytes $It.Size; $tSize.FontSize = 12; $tSize.VerticalAlignment = 'Center'; $tSize.HorizontalAlignment = 'Right'
+    $tSize.Foreground = (New-WpfBrush $script:Theme.Text); [System.Windows.Controls.Grid]::SetColumn($tSize, 2); $null = $ig.Children.Add($tSize)
+    $tSt = New-Object System.Windows.Controls.TextBlock
+    $tSt.Text = $(if ($It.Keep) { '保留' } else { '待删' }); $tSt.FontSize = 12; $tSt.VerticalAlignment = 'Center'
+    $tSt.Foreground = (New-WpfBrush $(if ($It.Keep) { $script:Theme.Green } else { $script:Theme.Yellow }))
+    [System.Windows.Controls.Grid]::SetColumn($tSt, 3); $null = $ig.Children.Add($tSt)
+    $tPath = New-Object System.Windows.Controls.TextBlock
+    $tPath.Text = $It.Path; $tPath.FontSize = 11; $tPath.VerticalAlignment = 'Center'; $tPath.TextTrimming = 'CharacterEllipsis'
+    $tPath.Foreground = (New-WpfBrush $script:Theme.Disabled); [System.Windows.Controls.Grid]::SetColumn($tPath, 4); $null = $ig.Children.Add($tPath)
+    $row.Child = $ig
+    $row.Add_MouseEnter({ param($s, $e) try { $s.Background = (New-WpfBrush '#F4F5F7') } catch { } })
+    $row.Add_MouseLeave({ param($s, $e) try { $s.Background = (New-WpfBrush '#FFFFFF') } catch { } })
+    return $row
+  }
+
+  # ===== 渲染（以 DupRows 为准） =====
+  function script:Render-Dup {
+    $script:DupList.Children.Clear(); $script:DupCheckboxes = @()
+    foreach ($r in $script:DupRows) { $null = $script:DupList.Children.Add((New-DupRow -It $r)) }
+    $grp = @($script:DupRows | ForEach-Object { $_.Group } | Sort-Object -Unique).Count
+    $script:LblDupInfo.Text = ('发现 {0} 组重复文件，共 {1} 个副本（每组保留 1 个）' -f $grp, $script:DupRows.Count)
+  }
+
+  # ===== 删除（以"删前存在删后不在"判成功；失败行保留在列表） =====
+  function script:Remove-DupFiles {
+    param($Items)
+    if ($Items.Count -eq 0) { return }
+    $r = [System.Windows.MessageBox]::Show(('确定将 {0} 个重复文件删除到回收站？（每组至少保留 1 个副本，请勿取消"保留"项）' -f $Items.Count), '确认删除', [System.Windows.MessageBoxButton]::YesNo, [System.Windows.MessageBoxImage]::Warning)
+    if ($r -ne [System.Windows.MessageBoxResult]::Yes) { return }
+    $rel = 0L; $ok = 0; $gone = @()
+    foreach ($it in $Items) {
+      $existed = Test-Path -LiteralPath $it.Path
+      $b = Remove-UserPathToRecycle $it.Path
+      if ($existed -and -not (Test-Path -LiteralPath $it.Path)) { $ok++; $rel += $b; $gone += $it.Path }
+    }
+    Log-Line ('重复文件删除: 成功 {0}/{1}, 释放 {2}' -f $ok, $Items.Count, (Format-Bytes $rel))
+    if ($gone.Count -gt 0) {
+      $script:DupRows = @($script:DupRows | Where-Object { $gone -notcontains $_.Path })
+      Render-Dup
+    }
+    try {
+      $null = [System.Windows.MessageBox]::Show(('已删除 {0} 个重复文件，释放 {1}；占用/受保护自动跳过。' -f $ok, (Format-Bytes $rel)), '完成', [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Information)
+    } catch { }
+  }
+
+  # ===== 检测 worker =====
+  $script:DupWorker = New-Object System.ComponentModel.BackgroundWorker
+  $script:DupWorker.WorkerSupportsCancellation = $true
+  $script:DupWorker.WorkerReportsProgress = $true
+  $dupDoWork = {
+    param($s, $e)
+    $groups = Get-DupeGroups -Root ([string]$e.Argument) -W $s
+    if ($s.CancellationPending) { $e.Cancel = $true; return }
+    $e.Result = $groups
+  }
+  Register-WorkerBody -Worker $script:DupWorker -Name 'Dup' -ScriptBlock $dupDoWork
+  $script:DupWorker.add_ProgressChanged({
+    param($s, $e)
+    try { $script:LblD.Text = [string]$e.UserState } catch { }
+  })
+  $script:DupWorker.add_RunWorkerCompleted({
+    param($s, $e)
+    try {
+      $script:BtnDupScan.IsEnabled = $true; $script:BtnDupStop.IsEnabled = $false
+      $script:ProgD.IsIndeterminate = $false; $script:ProgD.Value = 0
+      if ($e.Error) { $script:LblD.Text = '检测出错'; Log-Line ('重复文件检测出错: ' + $e.Error.Message); return }
+      if ($e.Cancelled) { $script:LblD.Text = '已取消'; return }
+      $script:DupRows = @($e.Result)
+      Render-Dup
+      $script:LblD.Text = '完成'
+      $grp = @($script:DupRows | ForEach-Object { $_.Group } | Sort-Object -Unique).Count
+      Log-Line ('重复文件检测完成: {0} 组 / {1} 文件' -f $grp, $script:DupRows.Count)
+    } catch { Log-Line ('重复文件完成处理出错: ' + $_.Exception.Message) }
+  })
+
+  $btnDupBrowse.Add_Click({
+    try {
+      $d = New-Object Microsoft.Win32.OpenFolderDialog
+      $d.Title = '选择要检测重复文件的目录'
+      if ($script:TxtDupDir.Text) { $d.InitialDirectory = $script:TxtDupDir.Text }
+      if ($d.ShowDialog()) { $script:TxtDupDir.Text = $d.FolderName }
+    } catch { }
+  })
+  $script:BtnDupScan.Add_Click({
+    $root = $script:TxtDupDir.Text.Trim()
+    if (-not $root -or -not (Test-Path -LiteralPath $root -PathType Container)) {
+      try { $null = [System.Windows.MessageBox]::Show('请输入存在的目录。', '提示', [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Information) } catch { }
+      return
+    }
+    $script:BtnDupScan.IsEnabled = $false; $script:BtnDupStop.IsEnabled = $true
+    $script:ProgD.IsIndeterminate = $true; $script:LblD.Text = '检测中...'
+    $script:DupList.Children.Clear(); $script:DupRows = @(); $script:DupCheckboxes = @()
+    $script:LblDupInfo.Text = '默认每组保留 1 个副本，其余已勾选待删除。'
+    Log-Line ('重复文件检测开始: ' + $root)
+    $script:DupWorker.RunWorkerAsync($root)
+  })
+  $script:BtnDupStop.Add_Click({ if ($script:DupWorker) { $script:DupWorker.CancelAsync() } })
+  $script:BtnDupDel.Add_Click({
+    $sel = @($script:DupCheckboxes | Where-Object { $_.IsChecked -and $_.Tag } | ForEach-Object { $_.Tag })
+    if ($sel.Count -eq 0) {
+      try { $null = [System.Windows.MessageBox]::Show('没有勾选要删除的文件。', '提示', [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Information) } catch { }
+      return
+    }
+    Remove-DupFiles -Items $sel
+  })
+
+  return $g
+}
 
 # ---------- Tab: 还原点管理 ----------
 function Get-RestorePoints {
@@ -2298,326 +3031,12 @@ function New-StartupPage { return (New-WpfPlaceholder -Title '启动项' -Msg '�
 #endregion
 
 #region 主窗口（橙色主题完整界面）
-$script:WpfShellXaml = @'
-<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
-        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="DiskCleanerPro - C 盘智能清理工具"
-        Width="1200" Height="800" MinWidth="960" MinHeight="640"
-        WindowStartupLocation="CenterScreen"
-        Background="#F5F6F8" FontFamily="Microsoft YaHei UI" FontSize="13"
-        UseLayoutRounding="True" TextOptions.TextFormattingMode="Display">
-  <Window.Resources>
-    <SolidColorBrush x:Key="Text" Color="#1F2937"/>
-    <SolidColorBrush x:Key="SubText" Color="#6B7280"/>
-    <SolidColorBrush x:Key="CardLine" Color="#E5E7EB"/>
-    <SolidColorBrush x:Key="CardBg" Color="#FFFFFF"/>
-    <SolidColorBrush x:Key="PageBg" Color="#F5F6F8"/>
-    <SolidColorBrush x:Key="Primary" Color="#F97316"/>
-    <SolidColorBrush x:Key="PrimaryHover" Color="#EA580C"/>
-    <SolidColorBrush x:Key="PrimaryPress" Color="#C2410C"/>
-    <SolidColorBrush x:Key="NavBg" Color="#EEF1F4"/>
-    <SolidColorBrush x:Key="NavHover" Color="#E4E8ED"/>
-    <SolidColorBrush x:Key="Green" Color="#16A34A"/>
-    <SolidColorBrush x:Key="GreenHover" Color="#15803D"/>
-    <SolidColorBrush x:Key="Red" Color="#DC2626"/>
-    <SolidColorBrush x:Key="Yellow" Color="#D97706"/>
-    <SolidColorBrush x:Key="LightBtn" Color="#EEF1F4"/>
-    <SolidColorBrush x:Key="LightBtnHover" Color="#E4E8ED"/>
-    <SolidColorBrush x:Key="LightBtnPress" Color="#DAE0E6"/>
 
-    <!-- 浅色按钮 -->
-    <Style x:Key="BtnLight" TargetType="Button">
-      <Setter Property="Foreground" Value="{StaticResource Text}"/>
-      <Setter Property="Background" Value="{StaticResource LightBtn}"/>
-      <Setter Property="BorderThickness" Value="0"/>
-      <Setter Property="Cursor" Value="Hand"/>
-      <Setter Property="Focusable" Value="False"/>
-      <Setter Property="FontSize" Value="12"/>
-      <Setter Property="Template">
-        <Setter.Value>
-          <ControlTemplate TargetType="Button">
-            <Border x:Name="Bd" CornerRadius="6" Background="{TemplateBinding Background}" Padding="{TemplateBinding Padding}">
-              <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
-            </Border>
-            <ControlTemplate.Triggers>
-              <Trigger Property="IsMouseOver" Value="True">
-                <Setter TargetName="Bd" Property="Background" Value="{StaticResource LightBtnHover}"/>
-              </Trigger>
-              <Trigger Property="IsPressed" Value="True">
-                <Setter TargetName="Bd" Property="Background" Value="{StaticResource LightBtnPress}"/>
-              </Trigger>
-              <Trigger Property="IsEnabled" Value="False">
-                <Setter Property="Opacity" Value="0.45"/>
-              </Trigger>
-            </ControlTemplate.Triggers>
-          </ControlTemplate>
-        </Setter.Value>
-      </Setter>
-    </Style>
 
-    <!-- 主按钮（橙） -->
-    <Style x:Key="BtnPrimary" TargetType="Button">
-      <Setter Property="Foreground" Value="White"/>
-      <Setter Property="Background" Value="{StaticResource Primary}"/>
-      <Setter Property="BorderThickness" Value="0"/>
-      <Setter Property="Cursor" Value="Hand"/>
-      <Setter Property="Focusable" Value="False"/>
-      <Setter Property="FontSize" Value="14"/>
-      <Setter Property="FontWeight" Value="Bold"/>
-      <Setter Property="Template">
-        <Setter.Value>
-          <ControlTemplate TargetType="Button">
-            <Border x:Name="Bd" CornerRadius="8" Background="{TemplateBinding Background}" Padding="{TemplateBinding Padding}">
-              <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
-            </Border>
-            <ControlTemplate.Triggers>
-              <Trigger Property="IsMouseOver" Value="True">
-                <Setter TargetName="Bd" Property="Background" Value="{StaticResource PrimaryHover}"/>
-              </Trigger>
-              <Trigger Property="IsPressed" Value="True">
-                <Setter TargetName="Bd" Property="Background" Value="{StaticResource PrimaryPress}"/>
-              </Trigger>
-              <Trigger Property="IsEnabled" Value="False">
-                <Setter Property="Opacity" Value="0.45"/>
-              </Trigger>
-            </ControlTemplate.Triggers>
-          </ControlTemplate>
-        </Setter.Value>
-      </Setter>
-    </Style>
 
-    <!-- 绿色按钮 -->
-    <Style x:Key="BtnGreen" TargetType="Button">
-      <Setter Property="Foreground" Value="White"/>
-      <Setter Property="Background" Value="{StaticResource Green}"/>
-      <Setter Property="BorderThickness" Value="0"/>
-      <Setter Property="Cursor" Value="Hand"/>
-      <Setter Property="Focusable" Value="False"/>
-      <Setter Property="FontSize" Value="12"/>
-      <Setter Property="Template">
-        <Setter.Value>
-          <ControlTemplate TargetType="Button">
-            <Border x:Name="Bd" CornerRadius="6" Background="{TemplateBinding Background}" Padding="{TemplateBinding Padding}">
-              <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
-            </Border>
-            <ControlTemplate.Triggers>
-              <Trigger Property="IsMouseOver" Value="True">
-                <Setter TargetName="Bd" Property="Background" Value="{StaticResource GreenHover}"/>
-              </Trigger>
-              <Trigger Property="IsPressed" Value="True">
-                <Setter TargetName="Bd" Property="Background" Value="#14532D"/>
-              </Trigger>
-              <Trigger Property="IsEnabled" Value="False">
-                <Setter Property="Opacity" Value="0.45"/>
-              </Trigger>
-            </ControlTemplate.Triggers>
-          </ControlTemplate>
-        </Setter.Value>
-      </Setter>
-    </Style>
 
-    <!-- 细进度条 -->
-    <Style x:Key="BarThin" TargetType="ProgressBar">
-      <Setter Property="Height" Value="6"/>
-      <Setter Property="Foreground" Value="{StaticResource Primary}"/>
-      <Setter Property="Background" Value="{StaticResource CardLine}"/>
-      <Setter Property="BorderThickness" Value="0"/>
-      <Setter Property="Template">
-        <Setter.Value>
-          <ControlTemplate TargetType="ProgressBar">
-            <Border x:Name="PART_Track" CornerRadius="3" Background="{TemplateBinding Background}">
-              <Border x:Name="PART_Indicator" CornerRadius="3" Background="{TemplateBinding Foreground}"
-                      HorizontalAlignment="Left"/>
-            </Border>
-          </ControlTemplate>
-        </Setter.Value>
-      </Setter>
-    </Style>
 
-    <!-- 左侧导航项：GPU 合成 + 120ms 过渡，杜绝 WinForms 式整条重绘闪烁 -->
-    <Style x:Key="NavItemStyle" TargetType="ListBoxItem">
-      <Setter Property="Cursor" Value="Hand"/>
-      <Setter Property="Foreground" Value="#5B6470"/>
-      <Setter Property="FontSize" Value="13"/>
-      <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
-      <Setter Property="Template">
-        <Setter.Value>
-          <ControlTemplate TargetType="ListBoxItem">
-            <Border CornerRadius="6" Margin="0,1">
-              <Grid>
-                <Border x:Name="HoverBg" CornerRadius="6" Background="Transparent"/>
-                <Border x:Name="SelBg" CornerRadius="6" Background="White" Opacity="0"/>
-                <Grid>
-                  <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="3"/>
-                    <ColumnDefinition Width="*"/>
-                  </Grid.ColumnDefinitions>
-                  <Border x:Name="SelBar" Background="#F97316" CornerRadius="1.5" Margin="0,5,0,5" Opacity="0"/>
-                  <ContentPresenter Grid.Column="1" Margin="12,9,8,9" VerticalAlignment="Center"/>
-                </Grid>
-              </Grid>
-            </Border>
-            <ControlTemplate.Triggers>
-              <Trigger Property="IsMouseOver" Value="True">
-                <Trigger.EnterActions>
-                  <BeginStoryboard>
-                    <Storyboard>
-                      <ColorAnimation Storyboard.TargetName="HoverBg" Storyboard.TargetProperty="(Border.Background).(SolidColorBrush.Color)" To="#E4E8ED" Duration="0:0:0.12"/>
-                    </Storyboard>
-                  </BeginStoryboard>
-                </Trigger.EnterActions>
-                <Trigger.ExitActions>
-                  <BeginStoryboard>
-                    <Storyboard>
-                      <ColorAnimation Storyboard.TargetName="HoverBg" Storyboard.TargetProperty="(Border.Background).(SolidColorBrush.Color)" To="Transparent" Duration="0:0:0.12"/>
-                    </Storyboard>
-                  </BeginStoryboard>
-                </Trigger.ExitActions>
-              </Trigger>
-              <Trigger Property="IsSelected" Value="True">
-                <Setter Property="FontWeight" Value="Bold"/>
-                <Setter Property="Foreground" Value="#1F2937"/>
-                <Trigger.EnterActions>
-                  <BeginStoryboard>
-                    <Storyboard>
-                      <DoubleAnimation Storyboard.TargetName="SelBg" Storyboard.TargetProperty="Opacity" To="1" Duration="0:0:0.12"/>
-                      <DoubleAnimation Storyboard.TargetName="SelBar" Storyboard.TargetProperty="Opacity" To="1" Duration="0:0:0.12"/>
-                    </Storyboard>
-                  </BeginStoryboard>
-                </Trigger.EnterActions>
-                <Trigger.ExitActions>
-                  <BeginStoryboard>
-                    <Storyboard>
-                      <DoubleAnimation Storyboard.TargetName="SelBg" Storyboard.TargetProperty="Opacity" To="0" Duration="0:0:0.12"/>
-                      <DoubleAnimation Storyboard.TargetName="SelBar" Storyboard.TargetProperty="Opacity" To="0" Duration="0:0:0.12"/>
-                    </Storyboard>
-                  </BeginStoryboard>
-                </Trigger.ExitActions>
-              </Trigger>
-            </ControlTemplate.Triggers>
-          </ControlTemplate>
-        </Setter.Value>
-      </Setter>
-    </Style>
-  </Window.Resources>
 
-  <Grid>
-    <Grid.RowDefinitions>
-      <RowDefinition Height="58"/>
-      <RowDefinition Height="*"/>
-      <RowDefinition Height="Auto"/>
-      <RowDefinition Height="Auto"/>
-    </Grid.RowDefinitions>
-
-    <!-- ============ 顶部栏 ============ -->
-    <Border Grid.Row="0" Background="{StaticResource CardBg}" BorderBrush="{StaticResource CardLine}" BorderThickness="0,0,0,1">
-      <Grid Margin="16,0">
-        <Grid.ColumnDefinitions>
-          <ColumnDefinition Width="Auto"/>
-          <ColumnDefinition Width="*"/>
-          <ColumnDefinition Width="Auto"/>
-          <ColumnDefinition Width="Auto"/>
-        </Grid.ColumnDefinitions>
-        <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-          <StackPanel>
-            <TextBlock Text="DiskCleanerPro" FontSize="15" FontWeight="Bold" Foreground="{StaticResource Text}"/>
-            <TextBlock Text="C 盘智能清理工具" FontSize="10" Foreground="{StaticResource SubText}" Margin="0,2,0,0"/>
-          </StackPanel>
-          <Border x:Name="AdminBadge" CornerRadius="4" Background="#ECFDF5" Margin="12,0,0,0" Padding="8,4" VerticalAlignment="Center">
-            <TextBlock x:Name="AdminBadgeText" Text="管理员" FontSize="11" FontWeight="Bold" Foreground="#047857"/>
-          </Border>
-        </StackPanel>
-        <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
-          <Button x:Name="BtnScan" Style="{StaticResource BtnLight}" Content="立即重新扫描" Height="32" Padding="16,0" Margin="0,0,8,0"/>
-          <Button x:Name="BtnClearCache" Style="{StaticResource BtnLight}" Content="清空扫描缓存" Height="32" Padding="16,0" Margin="0,0,8,0"/>
-          <Button x:Name="BtnCancelScan" Style="{StaticResource BtnLight}" Content="取消扫描" Height="32" Padding="14,0" IsEnabled="False"/>
-        </StackPanel>
-        <StackPanel Grid.Column="3" Width="260" VerticalAlignment="Center" Margin="16,0,0,0">
-          <TextBlock x:Name="DiskInfo" Text="磁盘信息加载中..." FontSize="12" Foreground="{StaticResource Text}" TextAlignment="Right"/>
-          <ProgressBar x:Name="DiskBar" Style="{StaticResource BarThin}" Height="5" Margin="0,5,0,0" Maximum="100"/>
-        </StackPanel>
-      </Grid>
-    </Border>
-
-    <!-- ============ 主体：左侧导航 + 页面 ============ -->
-    <Grid Grid.Row="1">
-      <Grid.ColumnDefinitions>
-        <ColumnDefinition Width="200"/>
-        <ColumnDefinition Width="*"/>
-      </Grid.ColumnDefinitions>
-      <Border Background="{StaticResource NavBg}" BorderBrush="{StaticResource CardLine}" BorderThickness="0,0,1,0">
-        <ListBox x:Name="NavList" Background="Transparent" BorderThickness="0" Foreground="#5B6470"
-                 SelectedIndex="0" Margin="8,8,8,8" ScrollViewer.HorizontalScrollBarVisibility="Disabled"
-                 ItemContainerStyle="{StaticResource NavItemStyle}" FocusVisualStyle="{x:Null}">
-          <ListBoxItem>缓存清理</ListBoxItem>
-          <ListBoxItem>空间分析</ListBoxItem>
-          <ListBoxItem>空文件夹</ListBoxItem>
-          <ListBoxItem>系统加速</ListBoxItem>
-          <ListBoxItem>大文件</ListBoxItem>
-          <ListBoxItem>软件占用</ListBoxItem>
-          <ListBoxItem>重复文件</ListBoxItem>
-          <ListBoxItem>还原点</ListBoxItem>
-          <ListBoxItem>启动项</ListBoxItem>
-        </ListBox>
-      </Border>
-      <Grid Grid.Column="1" x:Name="PageHost" Background="{StaticResource PageBg}"/>
-    </Grid>
-
-    <!-- ============ 底部操作条 ============ -->
-    <Border Grid.Row="2" Background="{StaticResource CardBg}" BorderBrush="{StaticResource CardLine}" BorderThickness="0,1,0,0">
-      <Grid Margin="16,12,16,12">
-        <Grid.RowDefinitions>
-          <RowDefinition Height="Auto"/>
-          <RowDefinition Height="Auto"/>
-          <RowDefinition Height="Auto"/>
-        </Grid.RowDefinitions>
-        <Grid>
-          <Grid.ColumnDefinitions>
-            <ColumnDefinition Width="*"/>
-            <ColumnDefinition Width="Auto"/>
-          </Grid.ColumnDefinitions>
-          <TextBlock x:Name="TotalLabel" Text="合计可释放: 0 B" FontSize="15" FontWeight="Bold" Foreground="{StaticResource Primary}" VerticalAlignment="Center"/>
-          <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
-            <Button x:Name="BtnCancelClean" Style="{StaticResource BtnLight}" Content="取消" Width="70" Height="50" IsEnabled="False" Margin="0,0,8,0"/>
-            <Button x:Name="BtnClean" Style="{StaticResource BtnPrimary}" Content="开始清理" Width="150" Height="50" FontSize="15"/>
-          </StackPanel>
-        </Grid>
-        <Grid Grid.Row="1" Margin="0,10,0,0">
-          <Grid.ColumnDefinitions>
-            <ColumnDefinition Width="*"/>
-            <ColumnDefinition Width="Auto"/>
-          </Grid.ColumnDefinitions>
-          <StackPanel Orientation="Horizontal">
-            <Button x:Name="BtnAll" Style="{StaticResource BtnLight}" Content="全选" Width="76" Height="30" Margin="0,0,8,0"/>
-            <Button x:Name="BtnNone" Style="{StaticResource BtnLight}" Content="全不选" Width="76" Height="30" Margin="0,0,8,0"/>
-            <Button x:Name="BtnLow" Style="{StaticResource BtnLight}" Content="仅低风险" Width="92" Height="30" Margin="0,0,8,0"/>
-            <Button x:Name="BtnSafe" Style="{StaticResource BtnGreen}" Content="一键清理安全项" Width="130" Height="30"/>
-          </StackPanel>
-          <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
-            <TextBlock Text="删除方式:" Foreground="{StaticResource SubText}" VerticalAlignment="Center" Margin="0,0,6,0"/>
-            <RadioButton x:Name="RbRecycle" Content="移到回收站 (可恢复)" IsChecked="True" VerticalAlignment="Center" Margin="0,0,16,0" Foreground="{StaticResource Text}"/>
-            <RadioButton x:Name="RbPermanent" Content="永久删除 (不可恢复)" VerticalAlignment="Center" Foreground="{StaticResource Red}"/>
-          </StackPanel>
-        </Grid>
-        <Grid Grid.Row="2" Margin="0,12,0,0">
-          <Grid.ColumnDefinitions>
-            <ColumnDefinition Width="*"/>
-            <ColumnDefinition Width="Auto"/>
-          </Grid.ColumnDefinitions>
-          <ProgressBar x:Name="CleanBar" Style="{StaticResource BarThin}" Height="6" VerticalAlignment="Center"/>
-          <TextBlock x:Name="CleanStatus" Grid.Column="1" Text="就绪" Foreground="{StaticResource SubText}" FontSize="12" VerticalAlignment="Center" Margin="16,0,0,0"/>
-        </Grid>
-      </Grid>
-    </Border>
-
-    <!-- ============ 日志 ============ -->
-    <Border Grid.Row="3" Background="#FBFBFC" BorderBrush="{StaticResource CardLine}" BorderThickness="0,1,0,0" Height="104">
-      <TextBox x:Name="LogBox" IsReadOnly="True" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto"
-               Background="Transparent" BorderThickness="0" FontFamily="Consolas" FontSize="12" Padding="12,6"/>
-    </Border>
-  </Grid>
-</Window>
-'@
 
 $script:WpfShellXaml = @'
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
@@ -2939,970 +3358,6 @@ $script:WpfShellXaml = @'
   </Grid>
 </Window>
 '@
-
-$script:WpfShellXaml = @'
-<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
-        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="DiskCleanerPro - C 盘智能清理工具"
-        Width="1200" Height="800" MinWidth="960" MinHeight="640"
-        WindowStartupLocation="CenterScreen"
-        Background="#F5F6F8" FontFamily="Microsoft YaHei UI" FontSize="13"
-        UseLayoutRounding="True" TextOptions.TextFormattingMode="Display">
-  <Window.Resources>
-    <SolidColorBrush x:Key="Text" Color="#1F2937"/>
-    <SolidColorBrush x:Key="SubText" Color="#6B7280"/>
-    <SolidColorBrush x:Key="CardLine" Color="#E5E7EB"/>
-    <SolidColorBrush x:Key="CardBg" Color="#FFFFFF"/>
-    <SolidColorBrush x:Key="PageBg" Color="#F5F6F8"/>
-    <SolidColorBrush x:Key="Primary" Color="#F97316"/>
-    <SolidColorBrush x:Key="PrimaryHover" Color="#EA580C"/>
-    <SolidColorBrush x:Key="PrimaryPress" Color="#C2410C"/>
-    <SolidColorBrush x:Key="NavBg" Color="#EEF1F4"/>
-    <SolidColorBrush x:Key="NavHover" Color="#E4E8ED"/>
-    <SolidColorBrush x:Key="Green" Color="#16A34A"/>
-    <SolidColorBrush x:Key="GreenHover" Color="#15803D"/>
-    <SolidColorBrush x:Key="Red" Color="#DC2626"/>
-    <SolidColorBrush x:Key="Yellow" Color="#D97706"/>
-    <SolidColorBrush x:Key="LightBtn" Color="#EEF1F4"/>
-    <SolidColorBrush x:Key="LightBtnHover" Color="#E4E8ED"/>
-    <SolidColorBrush x:Key="LightBtnPress" Color="#DAE0E6"/>
-
-    <!-- 浅色按钮 -->
-    <Style x:Key="BtnLight" TargetType="Button">
-      <Setter Property="Foreground" Value="{StaticResource Text}"/>
-      <Setter Property="Background" Value="{StaticResource LightBtn}"/>
-      <Setter Property="BorderThickness" Value="0"/>
-      <Setter Property="Cursor" Value="Hand"/>
-      <Setter Property="Focusable" Value="False"/>
-      <Setter Property="FontSize" Value="12"/>
-      <Setter Property="Template">
-        <Setter.Value>
-          <ControlTemplate TargetType="Button">
-            <Border x:Name="Bd" CornerRadius="6" Background="{TemplateBinding Background}" Padding="{TemplateBinding Padding}">
-              <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
-            </Border>
-            <ControlTemplate.Triggers>
-              <Trigger Property="IsMouseOver" Value="True">
-                <Setter TargetName="Bd" Property="Background" Value="{StaticResource LightBtnHover}"/>
-              </Trigger>
-              <Trigger Property="IsPressed" Value="True">
-                <Setter TargetName="Bd" Property="Background" Value="{StaticResource LightBtnPress}"/>
-              </Trigger>
-              <Trigger Property="IsEnabled" Value="False">
-                <Setter Property="Opacity" Value="0.45"/>
-              </Trigger>
-            </ControlTemplate.Triggers>
-          </ControlTemplate>
-        </Setter.Value>
-      </Setter>
-    </Style>
-
-    <!-- 主按钮（橙） -->
-    <Style x:Key="BtnPrimary" TargetType="Button">
-      <Setter Property="Foreground" Value="White"/>
-      <Setter Property="Background" Value="{StaticResource Primary}"/>
-      <Setter Property="BorderThickness" Value="0"/>
-      <Setter Property="Cursor" Value="Hand"/>
-      <Setter Property="Focusable" Value="False"/>
-      <Setter Property="FontSize" Value="14"/>
-      <Setter Property="FontWeight" Value="Bold"/>
-      <Setter Property="Template">
-        <Setter.Value>
-          <ControlTemplate TargetType="Button">
-            <Border x:Name="Bd" CornerRadius="8" Background="{TemplateBinding Background}" Padding="{TemplateBinding Padding}">
-              <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
-            </Border>
-            <ControlTemplate.Triggers>
-              <Trigger Property="IsMouseOver" Value="True">
-                <Setter TargetName="Bd" Property="Background" Value="{StaticResource PrimaryHover}"/>
-              </Trigger>
-              <Trigger Property="IsPressed" Value="True">
-                <Setter TargetName="Bd" Property="Background" Value="{StaticResource PrimaryPress}"/>
-              </Trigger>
-              <Trigger Property="IsEnabled" Value="False">
-                <Setter Property="Opacity" Value="0.45"/>
-              </Trigger>
-            </ControlTemplate.Triggers>
-          </ControlTemplate>
-        </Setter.Value>
-      </Setter>
-    </Style>
-
-    <!-- 绿色按钮 -->
-    <Style x:Key="BtnGreen" TargetType="Button">
-      <Setter Property="Foreground" Value="White"/>
-      <Setter Property="Background" Value="{StaticResource Green}"/>
-      <Setter Property="BorderThickness" Value="0"/>
-      <Setter Property="Cursor" Value="Hand"/>
-      <Setter Property="Focusable" Value="False"/>
-      <Setter Property="FontSize" Value="12"/>
-      <Setter Property="Template">
-        <Setter.Value>
-          <ControlTemplate TargetType="Button">
-            <Border x:Name="Bd" CornerRadius="6" Background="{TemplateBinding Background}" Padding="{TemplateBinding Padding}">
-              <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
-            </Border>
-            <ControlTemplate.Triggers>
-              <Trigger Property="IsMouseOver" Value="True">
-                <Setter TargetName="Bd" Property="Background" Value="{StaticResource GreenHover}"/>
-              </Trigger>
-              <Trigger Property="IsPressed" Value="True">
-                <Setter TargetName="Bd" Property="Background" Value="#14532D"/>
-              </Trigger>
-              <Trigger Property="IsEnabled" Value="False">
-                <Setter Property="Opacity" Value="0.45"/>
-              </Trigger>
-            </ControlTemplate.Triggers>
-          </ControlTemplate>
-        </Setter.Value>
-      </Setter>
-    </Style>
-
-    <!-- 细进度条 -->
-    <Style x:Key="BarThin" TargetType="ProgressBar">
-      <Setter Property="Height" Value="6"/>
-      <Setter Property="Foreground" Value="{StaticResource Primary}"/>
-      <Setter Property="Background" Value="{StaticResource CardLine}"/>
-      <Setter Property="BorderThickness" Value="0"/>
-      <Setter Property="Template">
-        <Setter.Value>
-          <ControlTemplate TargetType="ProgressBar">
-            <Border x:Name="PART_Track" CornerRadius="3" Background="{TemplateBinding Background}">
-              <Border x:Name="PART_Indicator" CornerRadius="3" Background="{TemplateBinding Foreground}"
-                      HorizontalAlignment="Left"/>
-            </Border>
-          </ControlTemplate>
-        </Setter.Value>
-      </Setter>
-    </Style>
-
-    <!-- 左侧导航项：GPU 合成 + 120ms 过渡，杜绝 WinForms 式整条重绘闪烁 -->
-    <Style x:Key="NavItemStyle" TargetType="ListBoxItem">
-      <Setter Property="Cursor" Value="Hand"/>
-      <Setter Property="Foreground" Value="#5B6470"/>
-      <Setter Property="FontSize" Value="13"/>
-      <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
-      <Setter Property="Template">
-        <Setter.Value>
-          <ControlTemplate TargetType="ListBoxItem">
-            <Border CornerRadius="6" Margin="0,1">
-              <Grid>
-                <Border x:Name="HoverBg" CornerRadius="6" Background="Transparent"/>
-                <Border x:Name="SelBg" CornerRadius="6" Background="White" Opacity="0"/>
-                <Grid>
-                  <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="3"/>
-                    <ColumnDefinition Width="*"/>
-                  </Grid.ColumnDefinitions>
-                  <Border x:Name="SelBar" Background="#F97316" CornerRadius="1.5" Margin="0,5,0,5" Opacity="0"/>
-                  <ContentPresenter Grid.Column="1" Margin="12,9,8,9" VerticalAlignment="Center"/>
-                </Grid>
-              </Grid>
-            </Border>
-            <ControlTemplate.Triggers>
-              <Trigger Property="IsMouseOver" Value="True">
-                <Trigger.EnterActions>
-                  <BeginStoryboard>
-                    <Storyboard>
-                      <ColorAnimation Storyboard.TargetName="HoverBg" Storyboard.TargetProperty="(Border.Background).(SolidColorBrush.Color)" To="#E4E8ED" Duration="0:0:0.12"/>
-                    </Storyboard>
-                  </BeginStoryboard>
-                </Trigger.EnterActions>
-                <Trigger.ExitActions>
-                  <BeginStoryboard>
-                    <Storyboard>
-                      <ColorAnimation Storyboard.TargetName="HoverBg" Storyboard.TargetProperty="(Border.Background).(SolidColorBrush.Color)" To="Transparent" Duration="0:0:0.12"/>
-                    </Storyboard>
-                  </BeginStoryboard>
-                </Trigger.ExitActions>
-              </Trigger>
-              <Trigger Property="IsSelected" Value="True">
-                <Setter Property="FontWeight" Value="Bold"/>
-                <Setter Property="Foreground" Value="#1F2937"/>
-                <Trigger.EnterActions>
-                  <BeginStoryboard>
-                    <Storyboard>
-                      <DoubleAnimation Storyboard.TargetName="SelBg" Storyboard.TargetProperty="Opacity" To="1" Duration="0:0:0.12"/>
-                      <DoubleAnimation Storyboard.TargetName="SelBar" Storyboard.TargetProperty="Opacity" To="1" Duration="0:0:0.12"/>
-                    </Storyboard>
-                  </BeginStoryboard>
-                </Trigger.EnterActions>
-                <Trigger.ExitActions>
-                  <BeginStoryboard>
-                    <Storyboard>
-                      <DoubleAnimation Storyboard.TargetName="SelBg" Storyboard.TargetProperty="Opacity" To="0" Duration="0:0:0.12"/>
-                      <DoubleAnimation Storyboard.TargetName="SelBar" Storyboard.TargetProperty="Opacity" To="0" Duration="0:0:0.12"/>
-                    </Storyboard>
-                  </BeginStoryboard>
-                </Trigger.ExitActions>
-              </Trigger>
-            </ControlTemplate.Triggers>
-          </ControlTemplate>
-        </Setter.Value>
-      </Setter>
-    </Style>
-  </Window.Resources>
-
-  <Grid>
-    <Grid.RowDefinitions>
-      <RowDefinition Height="58"/>
-      <RowDefinition Height="*"/>
-      <RowDefinition Height="Auto"/>
-      <RowDefinition Height="Auto"/>
-    </Grid.RowDefinitions>
-
-    <!-- ============ 顶部栏 ============ -->
-    <Border Grid.Row="0" Background="{StaticResource CardBg}" BorderBrush="{StaticResource CardLine}" BorderThickness="0,0,0,1">
-      <Grid Margin="16,0">
-        <Grid.ColumnDefinitions>
-          <ColumnDefinition Width="Auto"/>
-          <ColumnDefinition Width="*"/>
-          <ColumnDefinition Width="Auto"/>
-          <ColumnDefinition Width="Auto"/>
-        </Grid.ColumnDefinitions>
-        <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-          <StackPanel>
-            <TextBlock Text="DiskCleanerPro" FontSize="15" FontWeight="Bold" Foreground="{StaticResource Text}"/>
-            <TextBlock Text="C 盘智能清理工具" FontSize="10" Foreground="{StaticResource SubText}" Margin="0,2,0,0"/>
-          </StackPanel>
-          <Border x:Name="AdminBadge" CornerRadius="4" Background="#ECFDF5" Margin="12,0,0,0" Padding="8,4" VerticalAlignment="Center">
-            <TextBlock x:Name="AdminBadgeText" Text="管理员" FontSize="11" FontWeight="Bold" Foreground="#047857"/>
-          </Border>
-        </StackPanel>
-        <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
-          <Button x:Name="BtnScan" Style="{StaticResource BtnLight}" Content="立即重新扫描" Height="32" Padding="16,0" Margin="0,0,8,0"/>
-          <Button x:Name="BtnClearCache" Style="{StaticResource BtnLight}" Content="清空扫描缓存" Height="32" Padding="16,0" Margin="0,0,8,0"/>
-          <Button x:Name="BtnCancelScan" Style="{StaticResource BtnLight}" Content="取消扫描" Height="32" Padding="14,0" IsEnabled="False"/>
-        </StackPanel>
-        <StackPanel Grid.Column="3" Width="260" VerticalAlignment="Center" Margin="16,0,0,0">
-          <TextBlock x:Name="DiskInfo" Text="磁盘信息加载中..." FontSize="12" Foreground="{StaticResource Text}" TextAlignment="Right"/>
-          <ProgressBar x:Name="DiskBar" Style="{StaticResource BarThin}" Height="5" Margin="0,5,0,0" Maximum="100"/>
-        </StackPanel>
-      </Grid>
-    </Border>
-
-    <!-- ============ 主体：左侧导航 + 页面 ============ -->
-    <Grid Grid.Row="1">
-      <Grid.ColumnDefinitions>
-        <ColumnDefinition Width="200"/>
-        <ColumnDefinition Width="*"/>
-      </Grid.ColumnDefinitions>
-      <Border Background="{StaticResource NavBg}" BorderBrush="{StaticResource CardLine}" BorderThickness="0,0,1,0">
-        <ListBox x:Name="NavList" Background="Transparent" BorderThickness="0" Foreground="#5B6470"
-                 SelectedIndex="0" Margin="8,8,8,8" ScrollViewer.HorizontalScrollBarVisibility="Disabled"
-                 ItemContainerStyle="{StaticResource NavItemStyle}" FocusVisualStyle="{x:Null}">
-          <ListBoxItem>缓存清理</ListBoxItem>
-          <ListBoxItem>空间分析</ListBoxItem>
-          <ListBoxItem>空文件夹</ListBoxItem>
-          <ListBoxItem>系统加速</ListBoxItem>
-          <ListBoxItem>大文件</ListBoxItem>
-          <ListBoxItem>软件占用</ListBoxItem>
-          <ListBoxItem>重复文件</ListBoxItem>
-          <ListBoxItem>还原点</ListBoxItem>
-          <ListBoxItem>启动项</ListBoxItem>
-        </ListBox>
-      </Border>
-      <Grid Grid.Column="1" x:Name="PageHost" Background="{StaticResource PageBg}"/>
-    </Grid>
-
-    <!-- ============ 底部操作条 ============ -->
-    <Border Grid.Row="2" Background="{StaticResource CardBg}" BorderBrush="{StaticResource CardLine}" BorderThickness="0,1,0,0">
-      <Grid Margin="16,12,16,12">
-        <Grid.RowDefinitions>
-          <RowDefinition Height="Auto"/>
-          <RowDefinition Height="Auto"/>
-          <RowDefinition Height="Auto"/>
-        </Grid.RowDefinitions>
-        <Grid>
-          <Grid.ColumnDefinitions>
-            <ColumnDefinition Width="*"/>
-            <ColumnDefinition Width="Auto"/>
-          </Grid.ColumnDefinitions>
-          <TextBlock x:Name="TotalLabel" Text="合计可释放: 0 B" FontSize="15" FontWeight="Bold" Foreground="{StaticResource Primary}" VerticalAlignment="Center"/>
-          <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
-            <Button x:Name="BtnCancelClean" Style="{StaticResource BtnLight}" Content="取消" Width="70" Height="50" IsEnabled="False" Margin="0,0,8,0"/>
-            <Button x:Name="BtnClean" Style="{StaticResource BtnPrimary}" Content="开始清理" Width="150" Height="50" FontSize="15"/>
-          </StackPanel>
-        </Grid>
-        <Grid Grid.Row="1" Margin="0,10,0,0">
-          <Grid.ColumnDefinitions>
-            <ColumnDefinition Width="*"/>
-            <ColumnDefinition Width="Auto"/>
-          </Grid.ColumnDefinitions>
-          <StackPanel Orientation="Horizontal">
-            <Button x:Name="BtnAll" Style="{StaticResource BtnLight}" Content="全选" Width="76" Height="30" Margin="0,0,8,0"/>
-            <Button x:Name="BtnNone" Style="{StaticResource BtnLight}" Content="全不选" Width="76" Height="30" Margin="0,0,8,0"/>
-            <Button x:Name="BtnLow" Style="{StaticResource BtnLight}" Content="仅低风险" Width="92" Height="30" Margin="0,0,8,0"/>
-            <Button x:Name="BtnSafe" Style="{StaticResource BtnGreen}" Content="一键清理安全项" Width="130" Height="30"/>
-          </StackPanel>
-          <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
-            <TextBlock Text="删除方式:" Foreground="{StaticResource SubText}" VerticalAlignment="Center" Margin="0,0,6,0"/>
-            <RadioButton x:Name="RbRecycle" Content="移到回收站 (可恢复)" IsChecked="True" VerticalAlignment="Center" Margin="0,0,16,0" Foreground="{StaticResource Text}"/>
-            <RadioButton x:Name="RbPermanent" Content="永久删除 (不可恢复)" VerticalAlignment="Center" Foreground="{StaticResource Red}"/>
-          </StackPanel>
-        </Grid>
-        <Grid Grid.Row="2" Margin="0,12,0,0">
-          <Grid.ColumnDefinitions>
-            <ColumnDefinition Width="*"/>
-            <ColumnDefinition Width="Auto"/>
-          </Grid.ColumnDefinitions>
-          <ProgressBar x:Name="CleanBar" Style="{StaticResource BarThin}" Height="6" VerticalAlignment="Center"/>
-          <TextBlock x:Name="CleanStatus" Grid.Column="1" Text="就绪" Foreground="{StaticResource SubText}" FontSize="12" VerticalAlignment="Center" Margin="16,0,0,0"/>
-        </Grid>
-      </Grid>
-    </Border>
-
-    <!-- ============ 日志 ============ -->
-    <Border Grid.Row="3" Background="#FBFBFC" BorderBrush="{StaticResource CardLine}" BorderThickness="0,1,0,0" Height="104">
-      <TextBox x:Name="LogBox" IsReadOnly="True" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto"
-               Background="Transparent" BorderThickness="0" FontFamily="Consolas" FontSize="12" Padding="12,6"/>
-    </Border>
-  </Grid>
-</Window>
-'@
-
-$script:WpfShellXaml = @'
-<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
-        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="DiskCleanerPro - C 盘智能清理工具"
-        Width="1200" Height="800" MinWidth="960" MinHeight="640"
-        WindowStartupLocation="CenterScreen"
-        Background="#F5F6F8" FontFamily="Microsoft YaHei UI" FontSize="13"
-        UseLayoutRounding="True" TextOptions.TextFormattingMode="Display">
-  <Window.Resources>
-    <SolidColorBrush x:Key="Text" Color="#1F2937"/>
-    <SolidColorBrush x:Key="SubText" Color="#6B7280"/>
-    <SolidColorBrush x:Key="CardLine" Color="#E5E7EB"/>
-    <SolidColorBrush x:Key="CardBg" Color="#FFFFFF"/>
-    <SolidColorBrush x:Key="PageBg" Color="#F5F6F8"/>
-    <SolidColorBrush x:Key="Primary" Color="#F97316"/>
-    <SolidColorBrush x:Key="PrimaryHover" Color="#EA580C"/>
-    <SolidColorBrush x:Key="PrimaryPress" Color="#C2410C"/>
-    <SolidColorBrush x:Key="NavBg" Color="#EEF1F4"/>
-    <SolidColorBrush x:Key="NavHover" Color="#E4E8ED"/>
-    <SolidColorBrush x:Key="Green" Color="#16A34A"/>
-    <SolidColorBrush x:Key="GreenHover" Color="#15803D"/>
-    <SolidColorBrush x:Key="Red" Color="#DC2626"/>
-    <SolidColorBrush x:Key="Yellow" Color="#D97706"/>
-    <SolidColorBrush x:Key="LightBtn" Color="#EEF1F4"/>
-    <SolidColorBrush x:Key="LightBtnHover" Color="#E4E8ED"/>
-    <SolidColorBrush x:Key="LightBtnPress" Color="#DAE0E6"/>
-
-    <!-- 浅色按钮 -->
-    <Style x:Key="BtnLight" TargetType="Button">
-      <Setter Property="Foreground" Value="{StaticResource Text}"/>
-      <Setter Property="Background" Value="{StaticResource LightBtn}"/>
-      <Setter Property="BorderThickness" Value="0"/>
-      <Setter Property="Cursor" Value="Hand"/>
-      <Setter Property="Focusable" Value="False"/>
-      <Setter Property="FontSize" Value="12"/>
-      <Setter Property="Template">
-        <Setter.Value>
-          <ControlTemplate TargetType="Button">
-            <Border x:Name="Bd" CornerRadius="6" Background="{TemplateBinding Background}" Padding="{TemplateBinding Padding}">
-              <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
-            </Border>
-            <ControlTemplate.Triggers>
-              <Trigger Property="IsMouseOver" Value="True">
-                <Setter TargetName="Bd" Property="Background" Value="{StaticResource LightBtnHover}"/>
-              </Trigger>
-              <Trigger Property="IsPressed" Value="True">
-                <Setter TargetName="Bd" Property="Background" Value="{StaticResource LightBtnPress}"/>
-              </Trigger>
-              <Trigger Property="IsEnabled" Value="False">
-                <Setter Property="Opacity" Value="0.45"/>
-              </Trigger>
-            </ControlTemplate.Triggers>
-          </ControlTemplate>
-        </Setter.Value>
-      </Setter>
-    </Style>
-
-    <!-- 主按钮（橙） -->
-    <Style x:Key="BtnPrimary" TargetType="Button">
-      <Setter Property="Foreground" Value="White"/>
-      <Setter Property="Background" Value="{StaticResource Primary}"/>
-      <Setter Property="BorderThickness" Value="0"/>
-      <Setter Property="Cursor" Value="Hand"/>
-      <Setter Property="Focusable" Value="False"/>
-      <Setter Property="FontSize" Value="14"/>
-      <Setter Property="FontWeight" Value="Bold"/>
-      <Setter Property="Template">
-        <Setter.Value>
-          <ControlTemplate TargetType="Button">
-            <Border x:Name="Bd" CornerRadius="8" Background="{TemplateBinding Background}" Padding="{TemplateBinding Padding}">
-              <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
-            </Border>
-            <ControlTemplate.Triggers>
-              <Trigger Property="IsMouseOver" Value="True">
-                <Setter TargetName="Bd" Property="Background" Value="{StaticResource PrimaryHover}"/>
-              </Trigger>
-              <Trigger Property="IsPressed" Value="True">
-                <Setter TargetName="Bd" Property="Background" Value="{StaticResource PrimaryPress}"/>
-              </Trigger>
-              <Trigger Property="IsEnabled" Value="False">
-                <Setter Property="Opacity" Value="0.45"/>
-              </Trigger>
-            </ControlTemplate.Triggers>
-          </ControlTemplate>
-        </Setter.Value>
-      </Setter>
-    </Style>
-
-    <!-- 绿色按钮 -->
-    <Style x:Key="BtnGreen" TargetType="Button">
-      <Setter Property="Foreground" Value="White"/>
-      <Setter Property="Background" Value="{StaticResource Green}"/>
-      <Setter Property="BorderThickness" Value="0"/>
-      <Setter Property="Cursor" Value="Hand"/>
-      <Setter Property="Focusable" Value="False"/>
-      <Setter Property="FontSize" Value="12"/>
-      <Setter Property="Template">
-        <Setter.Value>
-          <ControlTemplate TargetType="Button">
-            <Border x:Name="Bd" CornerRadius="6" Background="{TemplateBinding Background}" Padding="{TemplateBinding Padding}">
-              <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
-            </Border>
-            <ControlTemplate.Triggers>
-              <Trigger Property="IsMouseOver" Value="True">
-                <Setter TargetName="Bd" Property="Background" Value="{StaticResource GreenHover}"/>
-              </Trigger>
-              <Trigger Property="IsPressed" Value="True">
-                <Setter TargetName="Bd" Property="Background" Value="#14532D"/>
-              </Trigger>
-              <Trigger Property="IsEnabled" Value="False">
-                <Setter Property="Opacity" Value="0.45"/>
-              </Trigger>
-            </ControlTemplate.Triggers>
-          </ControlTemplate>
-        </Setter.Value>
-      </Setter>
-    </Style>
-
-    <!-- 细进度条 -->
-    <Style x:Key="BarThin" TargetType="ProgressBar">
-      <Setter Property="Height" Value="6"/>
-      <Setter Property="Foreground" Value="{StaticResource Primary}"/>
-      <Setter Property="Background" Value="{StaticResource CardLine}"/>
-      <Setter Property="BorderThickness" Value="0"/>
-      <Setter Property="Template">
-        <Setter.Value>
-          <ControlTemplate TargetType="ProgressBar">
-            <Border x:Name="PART_Track" CornerRadius="3" Background="{TemplateBinding Background}">
-              <Border x:Name="PART_Indicator" CornerRadius="3" Background="{TemplateBinding Foreground}"
-                      HorizontalAlignment="Left"/>
-            </Border>
-          </ControlTemplate>
-        </Setter.Value>
-      </Setter>
-    </Style>
-
-    <!-- 左侧导航项：GPU 合成 + 120ms 过渡，杜绝 WinForms 式整条重绘闪烁 -->
-    <Style x:Key="NavItemStyle" TargetType="ListBoxItem">
-      <Setter Property="Cursor" Value="Hand"/>
-      <Setter Property="Foreground" Value="#5B6470"/>
-      <Setter Property="FontSize" Value="13"/>
-      <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
-      <Setter Property="Template">
-        <Setter.Value>
-          <ControlTemplate TargetType="ListBoxItem">
-            <Border CornerRadius="6" Margin="0,1">
-              <Grid>
-                <Border x:Name="HoverBg" CornerRadius="6" Background="Transparent"/>
-                <Border x:Name="SelBg" CornerRadius="6" Background="White" Opacity="0"/>
-                <Grid>
-                  <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="3"/>
-                    <ColumnDefinition Width="*"/>
-                  </Grid.ColumnDefinitions>
-                  <Border x:Name="SelBar" Background="#F97316" CornerRadius="1.5" Margin="0,5,0,5" Opacity="0"/>
-                  <ContentPresenter Grid.Column="1" Margin="12,9,8,9" VerticalAlignment="Center"/>
-                </Grid>
-              </Grid>
-            </Border>
-            <ControlTemplate.Triggers>
-              <Trigger Property="IsMouseOver" Value="True">
-                <Trigger.EnterActions>
-                  <BeginStoryboard>
-                    <Storyboard>
-                      <ColorAnimation Storyboard.TargetName="HoverBg" Storyboard.TargetProperty="(Border.Background).(SolidColorBrush.Color)" To="#E4E8ED" Duration="0:0:0.12"/>
-                    </Storyboard>
-                  </BeginStoryboard>
-                </Trigger.EnterActions>
-                <Trigger.ExitActions>
-                  <BeginStoryboard>
-                    <Storyboard>
-                      <ColorAnimation Storyboard.TargetName="HoverBg" Storyboard.TargetProperty="(Border.Background).(SolidColorBrush.Color)" To="Transparent" Duration="0:0:0.12"/>
-                    </Storyboard>
-                  </BeginStoryboard>
-                </Trigger.ExitActions>
-              </Trigger>
-              <Trigger Property="IsSelected" Value="True">
-                <Setter Property="FontWeight" Value="Bold"/>
-                <Setter Property="Foreground" Value="#1F2937"/>
-                <Trigger.EnterActions>
-                  <BeginStoryboard>
-                    <Storyboard>
-                      <DoubleAnimation Storyboard.TargetName="SelBg" Storyboard.TargetProperty="Opacity" To="1" Duration="0:0:0.12"/>
-                      <DoubleAnimation Storyboard.TargetName="SelBar" Storyboard.TargetProperty="Opacity" To="1" Duration="0:0:0.12"/>
-                    </Storyboard>
-                  </BeginStoryboard>
-                </Trigger.EnterActions>
-                <Trigger.ExitActions>
-                  <BeginStoryboard>
-                    <Storyboard>
-                      <DoubleAnimation Storyboard.TargetName="SelBg" Storyboard.TargetProperty="Opacity" To="0" Duration="0:0:0.12"/>
-                      <DoubleAnimation Storyboard.TargetName="SelBar" Storyboard.TargetProperty="Opacity" To="0" Duration="0:0:0.12"/>
-                    </Storyboard>
-                  </BeginStoryboard>
-                </Trigger.ExitActions>
-              </Trigger>
-            </ControlTemplate.Triggers>
-          </ControlTemplate>
-        </Setter.Value>
-      </Setter>
-    </Style>
-  </Window.Resources>
-
-  <Grid>
-    <Grid.RowDefinitions>
-      <RowDefinition Height="58"/>
-      <RowDefinition Height="*"/>
-      <RowDefinition Height="Auto"/>
-      <RowDefinition Height="Auto"/>
-    </Grid.RowDefinitions>
-
-    <!-- ============ 顶部栏 ============ -->
-    <Border Grid.Row="0" Background="{StaticResource CardBg}" BorderBrush="{StaticResource CardLine}" BorderThickness="0,0,0,1">
-      <Grid Margin="16,0">
-        <Grid.ColumnDefinitions>
-          <ColumnDefinition Width="Auto"/>
-          <ColumnDefinition Width="*"/>
-          <ColumnDefinition Width="Auto"/>
-          <ColumnDefinition Width="Auto"/>
-        </Grid.ColumnDefinitions>
-        <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-          <StackPanel>
-            <TextBlock Text="DiskCleanerPro" FontSize="15" FontWeight="Bold" Foreground="{StaticResource Text}"/>
-            <TextBlock Text="C 盘智能清理工具" FontSize="10" Foreground="{StaticResource SubText}" Margin="0,2,0,0"/>
-          </StackPanel>
-          <Border x:Name="AdminBadge" CornerRadius="4" Background="#ECFDF5" Margin="12,0,0,0" Padding="8,4" VerticalAlignment="Center">
-            <TextBlock x:Name="AdminBadgeText" Text="管理员" FontSize="11" FontWeight="Bold" Foreground="#047857"/>
-          </Border>
-        </StackPanel>
-        <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
-          <Button x:Name="BtnScan" Style="{StaticResource BtnLight}" Content="立即重新扫描" Height="32" Padding="16,0" Margin="0,0,8,0"/>
-          <Button x:Name="BtnClearCache" Style="{StaticResource BtnLight}" Content="清空扫描缓存" Height="32" Padding="16,0" Margin="0,0,8,0"/>
-          <Button x:Name="BtnCancelScan" Style="{StaticResource BtnLight}" Content="取消扫描" Height="32" Padding="14,0" IsEnabled="False"/>
-        </StackPanel>
-        <StackPanel Grid.Column="3" Width="260" VerticalAlignment="Center" Margin="16,0,0,0">
-          <TextBlock x:Name="DiskInfo" Text="磁盘信息加载中..." FontSize="12" Foreground="{StaticResource Text}" TextAlignment="Right"/>
-          <ProgressBar x:Name="DiskBar" Style="{StaticResource BarThin}" Height="5" Margin="0,5,0,0" Maximum="100"/>
-        </StackPanel>
-      </Grid>
-    </Border>
-
-    <!-- ============ 主体：左侧导航 + 页面 ============ -->
-    <Grid Grid.Row="1">
-      <Grid.ColumnDefinitions>
-        <ColumnDefinition Width="200"/>
-        <ColumnDefinition Width="*"/>
-      </Grid.ColumnDefinitions>
-      <Border Background="{StaticResource NavBg}" BorderBrush="{StaticResource CardLine}" BorderThickness="0,0,1,0">
-        <ListBox x:Name="NavList" Background="Transparent" BorderThickness="0" Foreground="#5B6470"
-                 SelectedIndex="0" Margin="8,8,8,8" ScrollViewer.HorizontalScrollBarVisibility="Disabled"
-                 ItemContainerStyle="{StaticResource NavItemStyle}" FocusVisualStyle="{x:Null}">
-          <ListBoxItem>缓存清理</ListBoxItem>
-          <ListBoxItem>空间分析</ListBoxItem>
-          <ListBoxItem>空文件夹</ListBoxItem>
-          <ListBoxItem>系统加速</ListBoxItem>
-          <ListBoxItem>大文件</ListBoxItem>
-          <ListBoxItem>软件占用</ListBoxItem>
-          <ListBoxItem>重复文件</ListBoxItem>
-          <ListBoxItem>还原点</ListBoxItem>
-          <ListBoxItem>启动项</ListBoxItem>
-        </ListBox>
-      </Border>
-      <Grid Grid.Column="1" x:Name="PageHost" Background="{StaticResource PageBg}"/>
-    </Grid>
-
-    <!-- ============ 底部操作条 ============ -->
-    <Border Grid.Row="2" Background="{StaticResource CardBg}" BorderBrush="{StaticResource CardLine}" BorderThickness="0,1,0,0">
-      <Grid Margin="16,12,16,12">
-        <Grid.RowDefinitions>
-          <RowDefinition Height="Auto"/>
-          <RowDefinition Height="Auto"/>
-          <RowDefinition Height="Auto"/>
-        </Grid.RowDefinitions>
-        <Grid>
-          <Grid.ColumnDefinitions>
-            <ColumnDefinition Width="*"/>
-            <ColumnDefinition Width="Auto"/>
-          </Grid.ColumnDefinitions>
-          <TextBlock x:Name="TotalLabel" Text="合计可释放: 0 B" FontSize="15" FontWeight="Bold" Foreground="{StaticResource Primary}" VerticalAlignment="Center"/>
-          <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
-            <Button x:Name="BtnCancelClean" Style="{StaticResource BtnLight}" Content="取消" Width="70" Height="50" IsEnabled="False" Margin="0,0,8,0"/>
-            <Button x:Name="BtnClean" Style="{StaticResource BtnPrimary}" Content="开始清理" Width="150" Height="50" FontSize="15"/>
-          </StackPanel>
-        </Grid>
-        <Grid Grid.Row="1" Margin="0,10,0,0">
-          <Grid.ColumnDefinitions>
-            <ColumnDefinition Width="*"/>
-            <ColumnDefinition Width="Auto"/>
-          </Grid.ColumnDefinitions>
-          <StackPanel Orientation="Horizontal">
-            <Button x:Name="BtnAll" Style="{StaticResource BtnLight}" Content="全选" Width="76" Height="30" Margin="0,0,8,0"/>
-            <Button x:Name="BtnNone" Style="{StaticResource BtnLight}" Content="全不选" Width="76" Height="30" Margin="0,0,8,0"/>
-            <Button x:Name="BtnLow" Style="{StaticResource BtnLight}" Content="仅低风险" Width="92" Height="30" Margin="0,0,8,0"/>
-            <Button x:Name="BtnSafe" Style="{StaticResource BtnGreen}" Content="一键清理安全项" Width="130" Height="30"/>
-          </StackPanel>
-          <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
-            <TextBlock Text="删除方式:" Foreground="{StaticResource SubText}" VerticalAlignment="Center" Margin="0,0,6,0"/>
-            <RadioButton x:Name="RbRecycle" Content="移到回收站 (可恢复)" IsChecked="True" VerticalAlignment="Center" Margin="0,0,16,0" Foreground="{StaticResource Text}"/>
-            <RadioButton x:Name="RbPermanent" Content="永久删除 (不可恢复)" VerticalAlignment="Center" Foreground="{StaticResource Red}"/>
-          </StackPanel>
-        </Grid>
-        <Grid Grid.Row="2" Margin="0,12,0,0">
-          <Grid.ColumnDefinitions>
-            <ColumnDefinition Width="*"/>
-            <ColumnDefinition Width="Auto"/>
-          </Grid.ColumnDefinitions>
-          <ProgressBar x:Name="CleanBar" Style="{StaticResource BarThin}" Height="6" VerticalAlignment="Center"/>
-          <TextBlock x:Name="CleanStatus" Grid.Column="1" Text="就绪" Foreground="{StaticResource SubText}" FontSize="12" VerticalAlignment="Center" Margin="16,0,0,0"/>
-        </Grid>
-      </Grid>
-    </Border>
-
-    <!-- ============ 日志 ============ -->
-    <Border Grid.Row="3" Background="#FBFBFC" BorderBrush="{StaticResource CardLine}" BorderThickness="0,1,0,0" Height="104">
-      <TextBox x:Name="LogBox" IsReadOnly="True" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto"
-               Background="Transparent" BorderThickness="0" FontFamily="Consolas" FontSize="12" Padding="12,6"/>
-    </Border>
-  </Grid>
-</Window>
-'@
-
-$script:WpfShellXaml = @'
-<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
-        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="DiskCleanerPro - C 盘智能清理工具"
-        Width="1200" Height="800" MinWidth="960" MinHeight="640"
-        WindowStartupLocation="CenterScreen"
-        Background="#F5F6F8" FontFamily="Microsoft YaHei UI" FontSize="13"
-        UseLayoutRounding="True" TextOptions.TextFormattingMode="Display">
-  <Window.Resources>
-    <SolidColorBrush x:Key="Text" Color="#1F2937"/>
-    <SolidColorBrush x:Key="SubText" Color="#6B7280"/>
-    <SolidColorBrush x:Key="CardLine" Color="#E5E7EB"/>
-    <SolidColorBrush x:Key="CardBg" Color="#FFFFFF"/>
-    <SolidColorBrush x:Key="PageBg" Color="#F5F6F8"/>
-    <SolidColorBrush x:Key="Primary" Color="#F97316"/>
-    <SolidColorBrush x:Key="PrimaryHover" Color="#EA580C"/>
-    <SolidColorBrush x:Key="PrimaryPress" Color="#C2410C"/>
-    <SolidColorBrush x:Key="NavBg" Color="#EEF1F4"/>
-    <SolidColorBrush x:Key="NavHover" Color="#E4E8ED"/>
-    <SolidColorBrush x:Key="Green" Color="#16A34A"/>
-    <SolidColorBrush x:Key="GreenHover" Color="#15803D"/>
-    <SolidColorBrush x:Key="Red" Color="#DC2626"/>
-    <SolidColorBrush x:Key="Yellow" Color="#D97706"/>
-    <SolidColorBrush x:Key="LightBtn" Color="#EEF1F4"/>
-    <SolidColorBrush x:Key="LightBtnHover" Color="#E4E8ED"/>
-    <SolidColorBrush x:Key="LightBtnPress" Color="#DAE0E6"/>
-
-    <!-- 浅色按钮 -->
-    <Style x:Key="BtnLight" TargetType="Button">
-      <Setter Property="Foreground" Value="{StaticResource Text}"/>
-      <Setter Property="Background" Value="{StaticResource LightBtn}"/>
-      <Setter Property="BorderThickness" Value="0"/>
-      <Setter Property="Cursor" Value="Hand"/>
-      <Setter Property="Focusable" Value="False"/>
-      <Setter Property="FontSize" Value="12"/>
-      <Setter Property="Template">
-        <Setter.Value>
-          <ControlTemplate TargetType="Button">
-            <Border x:Name="Bd" CornerRadius="6" Background="{TemplateBinding Background}" Padding="{TemplateBinding Padding}">
-              <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
-            </Border>
-            <ControlTemplate.Triggers>
-              <Trigger Property="IsMouseOver" Value="True">
-                <Setter TargetName="Bd" Property="Background" Value="{StaticResource LightBtnHover}"/>
-              </Trigger>
-              <Trigger Property="IsPressed" Value="True">
-                <Setter TargetName="Bd" Property="Background" Value="{StaticResource LightBtnPress}"/>
-              </Trigger>
-              <Trigger Property="IsEnabled" Value="False">
-                <Setter Property="Opacity" Value="0.45"/>
-              </Trigger>
-            </ControlTemplate.Triggers>
-          </ControlTemplate>
-        </Setter.Value>
-      </Setter>
-    </Style>
-
-    <!-- 主按钮（橙） -->
-    <Style x:Key="BtnPrimary" TargetType="Button">
-      <Setter Property="Foreground" Value="White"/>
-      <Setter Property="Background" Value="{StaticResource Primary}"/>
-      <Setter Property="BorderThickness" Value="0"/>
-      <Setter Property="Cursor" Value="Hand"/>
-      <Setter Property="Focusable" Value="False"/>
-      <Setter Property="FontSize" Value="14"/>
-      <Setter Property="FontWeight" Value="Bold"/>
-      <Setter Property="Template">
-        <Setter.Value>
-          <ControlTemplate TargetType="Button">
-            <Border x:Name="Bd" CornerRadius="8" Background="{TemplateBinding Background}" Padding="{TemplateBinding Padding}">
-              <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
-            </Border>
-            <ControlTemplate.Triggers>
-              <Trigger Property="IsMouseOver" Value="True">
-                <Setter TargetName="Bd" Property="Background" Value="{StaticResource PrimaryHover}"/>
-              </Trigger>
-              <Trigger Property="IsPressed" Value="True">
-                <Setter TargetName="Bd" Property="Background" Value="{StaticResource PrimaryPress}"/>
-              </Trigger>
-              <Trigger Property="IsEnabled" Value="False">
-                <Setter Property="Opacity" Value="0.45"/>
-              </Trigger>
-            </ControlTemplate.Triggers>
-          </ControlTemplate>
-        </Setter.Value>
-      </Setter>
-    </Style>
-
-    <!-- 绿色按钮 -->
-    <Style x:Key="BtnGreen" TargetType="Button">
-      <Setter Property="Foreground" Value="White"/>
-      <Setter Property="Background" Value="{StaticResource Green}"/>
-      <Setter Property="BorderThickness" Value="0"/>
-      <Setter Property="Cursor" Value="Hand"/>
-      <Setter Property="Focusable" Value="False"/>
-      <Setter Property="FontSize" Value="12"/>
-      <Setter Property="Template">
-        <Setter.Value>
-          <ControlTemplate TargetType="Button">
-            <Border x:Name="Bd" CornerRadius="6" Background="{TemplateBinding Background}" Padding="{TemplateBinding Padding}">
-              <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
-            </Border>
-            <ControlTemplate.Triggers>
-              <Trigger Property="IsMouseOver" Value="True">
-                <Setter TargetName="Bd" Property="Background" Value="{StaticResource GreenHover}"/>
-              </Trigger>
-              <Trigger Property="IsPressed" Value="True">
-                <Setter TargetName="Bd" Property="Background" Value="#14532D"/>
-              </Trigger>
-              <Trigger Property="IsEnabled" Value="False">
-                <Setter Property="Opacity" Value="0.45"/>
-              </Trigger>
-            </ControlTemplate.Triggers>
-          </ControlTemplate>
-        </Setter.Value>
-      </Setter>
-    </Style>
-
-    <!-- 细进度条 -->
-    <Style x:Key="BarThin" TargetType="ProgressBar">
-      <Setter Property="Height" Value="6"/>
-      <Setter Property="Foreground" Value="{StaticResource Primary}"/>
-      <Setter Property="Background" Value="{StaticResource CardLine}"/>
-      <Setter Property="BorderThickness" Value="0"/>
-      <Setter Property="Template">
-        <Setter.Value>
-          <ControlTemplate TargetType="ProgressBar">
-            <Border x:Name="PART_Track" CornerRadius="3" Background="{TemplateBinding Background}">
-              <Border x:Name="PART_Indicator" CornerRadius="3" Background="{TemplateBinding Foreground}"
-                      HorizontalAlignment="Left"/>
-            </Border>
-          </ControlTemplate>
-        </Setter.Value>
-      </Setter>
-    </Style>
-
-    <!-- 左侧导航项：GPU 合成 + 120ms 过渡，杜绝 WinForms 式整条重绘闪烁 -->
-    <Style x:Key="NavItemStyle" TargetType="ListBoxItem">
-      <Setter Property="Cursor" Value="Hand"/>
-      <Setter Property="Foreground" Value="#5B6470"/>
-      <Setter Property="FontSize" Value="13"/>
-      <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
-      <Setter Property="Template">
-        <Setter.Value>
-          <ControlTemplate TargetType="ListBoxItem">
-            <Border CornerRadius="6" Margin="0,1">
-              <Grid>
-                <Border x:Name="HoverBg" CornerRadius="6" Background="Transparent"/>
-                <Border x:Name="SelBg" CornerRadius="6" Background="White" Opacity="0"/>
-                <Grid>
-                  <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="3"/>
-                    <ColumnDefinition Width="*"/>
-                  </Grid.ColumnDefinitions>
-                  <Border x:Name="SelBar" Background="#F97316" CornerRadius="1.5" Margin="0,5,0,5" Opacity="0"/>
-                  <ContentPresenter Grid.Column="1" Margin="12,9,8,9" VerticalAlignment="Center"/>
-                </Grid>
-              </Grid>
-            </Border>
-            <ControlTemplate.Triggers>
-              <Trigger Property="IsMouseOver" Value="True">
-                <Trigger.EnterActions>
-                  <BeginStoryboard>
-                    <Storyboard>
-                      <ColorAnimation Storyboard.TargetName="HoverBg" Storyboard.TargetProperty="(Border.Background).(SolidColorBrush.Color)" To="#E4E8ED" Duration="0:0:0.12"/>
-                    </Storyboard>
-                  </BeginStoryboard>
-                </Trigger.EnterActions>
-                <Trigger.ExitActions>
-                  <BeginStoryboard>
-                    <Storyboard>
-                      <ColorAnimation Storyboard.TargetName="HoverBg" Storyboard.TargetProperty="(Border.Background).(SolidColorBrush.Color)" To="Transparent" Duration="0:0:0.12"/>
-                    </Storyboard>
-                  </BeginStoryboard>
-                </Trigger.ExitActions>
-              </Trigger>
-              <Trigger Property="IsSelected" Value="True">
-                <Setter Property="FontWeight" Value="Bold"/>
-                <Setter Property="Foreground" Value="#1F2937"/>
-                <Trigger.EnterActions>
-                  <BeginStoryboard>
-                    <Storyboard>
-                      <DoubleAnimation Storyboard.TargetName="SelBg" Storyboard.TargetProperty="Opacity" To="1" Duration="0:0:0.12"/>
-                      <DoubleAnimation Storyboard.TargetName="SelBar" Storyboard.TargetProperty="Opacity" To="1" Duration="0:0:0.12"/>
-                    </Storyboard>
-                  </BeginStoryboard>
-                </Trigger.EnterActions>
-                <Trigger.ExitActions>
-                  <BeginStoryboard>
-                    <Storyboard>
-                      <DoubleAnimation Storyboard.TargetName="SelBg" Storyboard.TargetProperty="Opacity" To="0" Duration="0:0:0.12"/>
-                      <DoubleAnimation Storyboard.TargetName="SelBar" Storyboard.TargetProperty="Opacity" To="0" Duration="0:0:0.12"/>
-                    </Storyboard>
-                  </BeginStoryboard>
-                </Trigger.ExitActions>
-              </Trigger>
-            </ControlTemplate.Triggers>
-          </ControlTemplate>
-        </Setter.Value>
-      </Setter>
-    </Style>
-  </Window.Resources>
-
-  <Grid>
-    <Grid.RowDefinitions>
-      <RowDefinition Height="58"/>
-      <RowDefinition Height="*"/>
-      <RowDefinition Height="Auto"/>
-      <RowDefinition Height="Auto"/>
-    </Grid.RowDefinitions>
-
-    <!-- ============ 顶部栏 ============ -->
-    <Border Grid.Row="0" Background="{StaticResource CardBg}" BorderBrush="{StaticResource CardLine}" BorderThickness="0,0,0,1">
-      <Grid Margin="16,0">
-        <Grid.ColumnDefinitions>
-          <ColumnDefinition Width="Auto"/>
-          <ColumnDefinition Width="*"/>
-          <ColumnDefinition Width="Auto"/>
-          <ColumnDefinition Width="Auto"/>
-        </Grid.ColumnDefinitions>
-        <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-          <StackPanel>
-            <TextBlock Text="DiskCleanerPro" FontSize="15" FontWeight="Bold" Foreground="{StaticResource Text}"/>
-            <TextBlock Text="C 盘智能清理工具" FontSize="10" Foreground="{StaticResource SubText}" Margin="0,2,0,0"/>
-          </StackPanel>
-          <Border x:Name="AdminBadge" CornerRadius="4" Background="#ECFDF5" Margin="12,0,0,0" Padding="8,4" VerticalAlignment="Center">
-            <TextBlock x:Name="AdminBadgeText" Text="管理员" FontSize="11" FontWeight="Bold" Foreground="#047857"/>
-          </Border>
-        </StackPanel>
-        <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
-          <Button x:Name="BtnScan" Style="{StaticResource BtnLight}" Content="立即重新扫描" Height="32" Padding="16,0" Margin="0,0,8,0"/>
-          <Button x:Name="BtnClearCache" Style="{StaticResource BtnLight}" Content="清空扫描缓存" Height="32" Padding="16,0" Margin="0,0,8,0"/>
-          <Button x:Name="BtnCancelScan" Style="{StaticResource BtnLight}" Content="取消扫描" Height="32" Padding="14,0" IsEnabled="False"/>
-        </StackPanel>
-        <StackPanel Grid.Column="3" Width="260" VerticalAlignment="Center" Margin="16,0,0,0">
-          <TextBlock x:Name="DiskInfo" Text="磁盘信息加载中..." FontSize="12" Foreground="{StaticResource Text}" TextAlignment="Right"/>
-          <ProgressBar x:Name="DiskBar" Style="{StaticResource BarThin}" Height="5" Margin="0,5,0,0" Maximum="100"/>
-        </StackPanel>
-      </Grid>
-    </Border>
-
-    <!-- ============ 主体：左侧导航 + 页面 ============ -->
-    <Grid Grid.Row="1">
-      <Grid.ColumnDefinitions>
-        <ColumnDefinition Width="200"/>
-        <ColumnDefinition Width="*"/>
-      </Grid.ColumnDefinitions>
-      <Border Background="{StaticResource NavBg}" BorderBrush="{StaticResource CardLine}" BorderThickness="0,0,1,0">
-        <ListBox x:Name="NavList" Background="Transparent" BorderThickness="0" Foreground="#5B6470"
-                 SelectedIndex="0" Margin="8,8,8,8" ScrollViewer.HorizontalScrollBarVisibility="Disabled"
-                 ItemContainerStyle="{StaticResource NavItemStyle}" FocusVisualStyle="{x:Null}">
-          <ListBoxItem>缓存清理</ListBoxItem>
-          <ListBoxItem>空间分析</ListBoxItem>
-          <ListBoxItem>空文件夹</ListBoxItem>
-          <ListBoxItem>系统加速</ListBoxItem>
-          <ListBoxItem>大文件</ListBoxItem>
-          <ListBoxItem>软件占用</ListBoxItem>
-          <ListBoxItem>重复文件</ListBoxItem>
-          <ListBoxItem>还原点</ListBoxItem>
-          <ListBoxItem>启动项</ListBoxItem>
-        </ListBox>
-      </Border>
-      <Grid Grid.Column="1" x:Name="PageHost" Background="{StaticResource PageBg}"/>
-    </Grid>
-
-    <!-- ============ 底部操作条 ============ -->
-    <Border Grid.Row="2" Background="{StaticResource CardBg}" BorderBrush="{StaticResource CardLine}" BorderThickness="0,1,0,0">
-      <Grid Margin="16,12,16,12">
-        <Grid.RowDefinitions>
-          <RowDefinition Height="Auto"/>
-          <RowDefinition Height="Auto"/>
-          <RowDefinition Height="Auto"/>
-        </Grid.RowDefinitions>
-        <Grid>
-          <Grid.ColumnDefinitions>
-            <ColumnDefinition Width="*"/>
-            <ColumnDefinition Width="Auto"/>
-          </Grid.ColumnDefinitions>
-          <TextBlock x:Name="TotalLabel" Text="合计可释放: 0 B" FontSize="15" FontWeight="Bold" Foreground="{StaticResource Primary}" VerticalAlignment="Center"/>
-          <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
-            <Button x:Name="BtnCancelClean" Style="{StaticResource BtnLight}" Content="取消" Width="70" Height="50" IsEnabled="False" Margin="0,0,8,0"/>
-            <Button x:Name="BtnClean" Style="{StaticResource BtnPrimary}" Content="开始清理" Width="150" Height="50" FontSize="15"/>
-          </StackPanel>
-        </Grid>
-        <Grid Grid.Row="1" Margin="0,10,0,0">
-          <Grid.ColumnDefinitions>
-            <ColumnDefinition Width="*"/>
-            <ColumnDefinition Width="Auto"/>
-          </Grid.ColumnDefinitions>
-          <StackPanel Orientation="Horizontal">
-            <Button x:Name="BtnAll" Style="{StaticResource BtnLight}" Content="全选" Width="76" Height="30" Margin="0,0,8,0"/>
-            <Button x:Name="BtnNone" Style="{StaticResource BtnLight}" Content="全不选" Width="76" Height="30" Margin="0,0,8,0"/>
-            <Button x:Name="BtnLow" Style="{StaticResource BtnLight}" Content="仅低风险" Width="92" Height="30" Margin="0,0,8,0"/>
-            <Button x:Name="BtnSafe" Style="{StaticResource BtnGreen}" Content="一键清理安全项" Width="130" Height="30"/>
-          </StackPanel>
-          <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
-            <TextBlock Text="删除方式:" Foreground="{StaticResource SubText}" VerticalAlignment="Center" Margin="0,0,6,0"/>
-            <RadioButton x:Name="RbRecycle" Content="移到回收站 (可恢复)" IsChecked="True" VerticalAlignment="Center" Margin="0,0,16,0" Foreground="{StaticResource Text}"/>
-            <RadioButton x:Name="RbPermanent" Content="永久删除 (不可恢复)" VerticalAlignment="Center" Foreground="{StaticResource Red}"/>
-          </StackPanel>
-        </Grid>
-        <Grid Grid.Row="2" Margin="0,12,0,0">
-          <Grid.ColumnDefinitions>
-            <ColumnDefinition Width="*"/>
-            <ColumnDefinition Width="Auto"/>
-          </Grid.ColumnDefinitions>
-          <ProgressBar x:Name="CleanBar" Style="{StaticResource BarThin}" Height="6" VerticalAlignment="Center"/>
-          <TextBlock x:Name="CleanStatus" Grid.Column="1" Text="就绪" Foreground="{StaticResource SubText}" FontSize="12" VerticalAlignment="Center" Margin="16,0,0,0"/>
-        </Grid>
-      </Grid>
-    </Border>
-
-    <!-- ============ 日志 ============ -->
-    <Border Grid.Row="3" Background="#FBFBFC" BorderBrush="{StaticResource CardLine}" BorderThickness="0,1,0,0" Height="104">
-      <TextBox x:Name="LogBox" IsReadOnly="True" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto"
-               Background="Transparent" BorderThickness="0" FontFamily="Consolas" FontSize="12" Padding="12,6"/>
-    </Border>
-  </Grid>
-</Window>
-'@
-
 function New-MainWindow {
   $win = $null
   try {
