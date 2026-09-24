@@ -67,6 +67,7 @@ Add-Type -ReferencedAssemblies $uiRefs -TypeDefinition @'
 using System;
 using System.Drawing;
 using System.Drawing.Drawing2D;
+using System.Text.RegularExpressions;
 using System.Windows.Forms;
 namespace DiskCleaner {
   public static class Ui {
@@ -222,6 +223,44 @@ namespace DiskCleaner {
       }
     }
   }
+  // 列表排序器：Mode 0=文本字典序 1=数值（解析 KB/MB/GB/TB/PB 单位与百分比；解析失败回退文本）
+  public class LvSorter : System.Collections.IComparer {
+    public int Column = -1;
+    public int Mode = 0;
+    public int Dir = 1;
+    static double ParseNum(string s) {
+      if (string.IsNullOrEmpty(s)) return double.NegativeInfinity;
+      string t = s.Replace(",", "").Trim();
+      Match m = Regex.Match(t, @"^(-?[\d.]+)\s*([KMGTP])?(?:B)?\s*%?\s*$", RegexOptions.IgnoreCase);
+      if (m.Success) {
+        double v;
+        if (!double.TryParse(m.Groups[1].Value, System.Globalization.NumberStyles.Float,
+            System.Globalization.CultureInfo.InvariantCulture, out v)) return double.NegativeInfinity;
+        string u = m.Groups[2].Value.ToUpperInvariant();
+        if (u == "K") v *= 1024.0; else if (u == "M") v *= 1048576.0;
+        else if (u == "G") v *= 1073741824.0; else if (u == "T") v *= 1099511627776.0;
+        else if (u == "P") v *= 1125899906842624.0;
+        return v;
+      }
+      return double.NegativeInfinity;
+    }
+    public int Compare(object x, object y) {
+      System.Windows.Forms.ListViewItem a = (System.Windows.Forms.ListViewItem)x;
+      System.Windows.Forms.ListViewItem b = (System.Windows.Forms.ListViewItem)y;
+      string sa = (a.SubItems.Count > Column) ? a.SubItems[Column].Text : "";
+      string sb = (b.SubItems.Count > Column) ? b.SubItems[Column].Text : "";
+      int r;
+      if (Mode == 1) {
+        double da = ParseNum(sa); double db = ParseNum(sb);
+        if (double.IsNegativeInfinity(da) || double.IsNegativeInfinity(db))
+          r = string.Compare(sa, sb, StringComparison.CurrentCulture);
+        else r = da.CompareTo(db);
+      } else {
+        r = string.Compare(sa, sb, StringComparison.CurrentCulture);
+      }
+      return r * Dir;
+    }
+  }
 }
 '@
 }
@@ -243,6 +282,34 @@ function New-ModernProgressBar {
   $b.BarColor = [System.Drawing.ColorTranslator]::FromHtml($Fill)
   $b.TrackColor = [System.Drawing.ColorTranslator]::FromHtml($Track)
   return $b
+}
+
+function Register-ColumnSort {
+  # 列头点击排序助手（所有列表通用）：
+  #   NumericCols 中的列按数值排序（含 KB/MB/GB/TB/PB/百分比解析，解析失败回退文本字典序）；
+  #   同一列再次点击切换升/降序。排序器状态挂在 $Lv.Tag 上，事件闭包不捕获外部变量
+  param([System.Windows.Forms.ListView]$Lv, [int[]]$NumericCols = @())
+  $s0 = New-Object DiskCleaner.LvSorter
+  $s0.Column = -1
+  $Lv.Tag = @{ Sorter = $s0; Numeric = $NumericCols }
+  $Lv.add_ColumnClick({
+    param($s, $e)
+    try {
+      $st = $s.Tag
+      if (-not $st) { return }
+      $sorter = $st.Sorter
+      $col = $e.Column
+      if ($sorter.Column -eq $col) {
+        $sorter.Dir = - $sorter.Dir
+      } else {
+        $sorter.Column = $col
+        $sorter.Dir = 1
+        $sorter.Mode = if (@($st.Numeric) -contains $col) { 1 } else { 0 }
+      }
+      $s.Sorting = 'None'
+      $s.ListViewItemSorter = $sorter   # 赋值即触发排序
+    } catch { }
+  })
 }
 #endregion
 
@@ -982,6 +1049,7 @@ function New-SpacePage {
   $null = $script:LvSpace.Columns.Add('占比', 70)
   $null = $script:LvSpace.Columns.Add('自身文件', 110)
   $null = $script:LvSpace.Columns.Add('完整路径', 540)
+  Register-ColumnSort -Lv $script:LvSpace -NumericCols @(1, 2, 3)
 
   $foot = New-Object System.Windows.Forms.Panel
   $foot.Dock = 'Bottom'; $foot.Height = 48; $foot.BackColor = [System.Drawing.Color]::White
@@ -1243,6 +1311,7 @@ function New-LargeFilesPage {
   $null = $script:LvLarge.Columns.Add('大小', 90)
   $null = $script:LvLarge.Columns.Add('修改时间', 130)
   $null = $script:LvLarge.Columns.Add('路径', 560)
+  Register-ColumnSort -Lv $script:LvLarge -NumericCols @(1)
 
   $foot = New-Object System.Windows.Forms.Panel
   $foot.Dock = 'Bottom'; $foot.Height = 48; $foot.BackColor = [System.Drawing.Color]::White
@@ -1468,6 +1537,7 @@ function New-EmptyDirPage {
   $script:LvEmpty.CheckBoxes = $true
   $null = $script:LvEmpty.Columns.Add('名称', 240)
   $null = $script:LvEmpty.Columns.Add('完整路径', 720)
+  Register-ColumnSort -Lv $script:LvEmpty
 
   $foot = New-Object System.Windows.Forms.Panel
   $foot.Dock = 'Bottom'; $foot.Height = 48; $foot.BackColor = [System.Drawing.Color]::White
@@ -1836,6 +1906,7 @@ function New-SoftwarePage {
   $null = $script:LvSoft.Columns.Add('安装位置', 320)
   $null = $script:LvSoft.Columns.Add('注册大小', 80)
   $null = $script:LvSoft.Columns.Add('实际占用', 90)
+  Register-ColumnSort -Lv $script:LvSoft -NumericCols @(4, 5)
 
   $menuS = New-Object System.Windows.Forms.ContextMenuStrip
   $miSoftOpen = New-Object System.Windows.Forms.ToolStripMenuItem('打开安装目录')
@@ -2038,6 +2109,7 @@ function New-DupeFilesPage {
   $null = $script:LvDup.Columns.Add('大小', 90)
   $null = $script:LvDup.Columns.Add('状态', 70)
   $null = $script:LvDup.Columns.Add('路径', 660)
+  Register-ColumnSort -Lv $script:LvDup -NumericCols @(0, 1)
 
   $foot = New-Object System.Windows.Forms.Panel
   $foot.Dock = 'Bottom'; $foot.Height = 48; $foot.BackColor = [System.Drawing.Color]::White
@@ -2196,6 +2268,7 @@ function New-RestorePage {
   $null = $script:LvRP.Columns.Add('序号', 70)
   $null = $script:LvRP.Columns.Add('创建时间', 150)
   $null = $script:LvRP.Columns.Add('描述', 400)
+  Register-ColumnSort -Lv $script:LvRP -NumericCols @(0)
 
   $p.Controls.Add($top)
   $p.Controls.Add($script:RPBanner)
@@ -2330,6 +2403,7 @@ function New-StartupPage {
   $null = $script:LvStart.Columns.Add('名称', 200)
   $null = $script:LvStart.Columns.Add('状态', 60)
   $null = $script:LvStart.Columns.Add('命令', 560)
+  Register-ColumnSort -Lv $script:LvStart
 
   $menuSt = New-Object System.Windows.Forms.ContextMenuStrip
   $miStCopy = New-Object System.Windows.Forms.ToolStripMenuItem('复制命令')
@@ -2697,6 +2771,7 @@ function New-MainWindow {
   $null = $script:MainListView.Columns.Add('大小', 100)
   $null = $script:MainListView.Columns.Add('风险', 80)
   $null = $script:MainListView.Columns.Add('说明', 480)
+  Register-ColumnSort -Lv $script:MainListView -NumericCols @(1)
 
   $tabClean.Controls.Add($actionBar)
   $tabClean.Controls.Add($detailPanel)
