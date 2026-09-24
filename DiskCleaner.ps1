@@ -57,6 +57,10 @@ function Write-CleanLog {
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 Add-Type -AssemblyName Microsoft.VisualBasic   # 回收站删除 API
+Add-Type -AssemblyName PresentationFramework    # WPF 界面（v1.3.0）
+Add-Type -AssemblyName PresentationCore
+Add-Type -AssemblyName WindowsBase
+Add-Type -AssemblyName System.Xaml
 #endregion
 
 #region 现代控件（Win11 风格：圆角按钮 / 圆角进度条 / 卡片面板，纯代码绘制无图片）
@@ -906,20 +910,38 @@ function Get-RiskBackColor {
   }
 }
 
-function New-PlaceholderPage {
-  # 附加功能 Tab 占位页（提交6 填充）
-  param([string]$Text, [string]$Msg)
-  $p = New-Object System.Windows.Forms.TabPage
-  $p.Text = $Text
-  $p.BackColor = [System.Drawing.ColorTranslator]::FromHtml($script:Theme.Bg)
-  $l = New-Object System.Windows.Forms.Label
-  $l.Text = $Msg
-  $l.Font = New-Object System.Drawing.Font($script:Theme.FontUi,12)
-  $l.ForeColor = [System.Drawing.ColorTranslator]::FromHtml($script:Theme.Text)
-  $l.AutoSize = $true
-  $l.Location = New-Object System.Drawing.Point(24, 30)
-  $p.Controls.Add($l)
-  return $p
+function New-WpfBrush {
+  param([string]$Hex)
+  if (-not $Hex) { return $null }
+  return ([System.Windows.Media.BrushConverter]::new()).ConvertFromString($Hex)
+}
+function New-WpfThickness {
+  param([double]$L, [double]$T, [double]$R, [double]$B)
+  return New-Object System.Windows.Thickness($L, $T, $R, $B)
+}
+function New-WpfPlaceholder {
+  param([string]$Title, [string]$Msg = '此页正在 WPF 重构中…')
+  $g = New-Object System.Windows.Controls.Grid
+  $g.Margin = (New-WpfThickness 24 18 24 18)
+  $sp = New-Object System.Windows.Controls.StackPanel
+  $t = New-Object System.Windows.Controls.TextBlock
+  $t.Text = $Title
+  $t.FontSize = 18
+  $t.FontWeight = [System.Windows.FontWeights]::Bold
+  $t.Foreground = (New-WpfBrush $script:Theme.Text)
+  $m = New-Object System.Windows.Controls.TextBlock
+  $m.Text = $Msg
+  $m.Margin = (New-WpfThickness 0 8 0 0)
+  $m.FontSize = 13
+  $m.Foreground = (New-WpfBrush $script:Theme.SubText)
+  $null = $sp.Children.Add($t)
+  $null = $sp.Children.Add($m)
+  $null = $g.Children.Add($sp)
+  return $g
+}
+
+function New-CleanPage {
+  return (New-WpfPlaceholder -Title '缓存清理' -Msg '缓存清理主页面（WPF 重构中，下一提交启用）')
 }
 #endregion
 
@@ -1060,242 +1082,7 @@ function Get-MergedDirTotals {
   return $total
 }
 
-function New-SpacePage {
-  $p = New-Object System.Windows.Forms.TabPage
-  $p.Text = '空间分析'
-  $p.BackColor = [System.Drawing.ColorTranslator]::FromHtml($script:Theme.Bg)
-  $p.Width = 1200
-
-  $top = New-Object System.Windows.Forms.Panel
-  $top.Dock = 'Top'; $top.Height = 44; $top.BackColor = [System.Drawing.Color]::White
-
-  $lblDrv2 = New-Object System.Windows.Forms.Label
-  $lblDrv2.Text = '磁盘:'; $lblDrv2.Location = New-Object System.Drawing.Point(12, 13); $lblDrv2.AutoSize = $true
-  $top.Controls.Add($lblDrv2)
-  $script:CmbSpaceDrive = New-Object System.Windows.Forms.ComboBox
-  $script:CmbSpaceDrive.Location = New-Object System.Drawing.Point(52, 10); $script:CmbSpaceDrive.Width = 66
-  foreach ($d in (Get-FixedDrives)) { $null = $script:CmbSpaceDrive.Items.Add($d) }
-  if ($script:CmbSpaceDrive.Items.Count -gt 0) { $script:CmbSpaceDrive.SelectedIndex = 0 }
-  $top.Controls.Add($script:CmbSpaceDrive)
-
-  $script:BtnSpaceScan = New-ModernButton
-  $script:BtnSpaceScan.Text = '开始扫描'
-  $script:BtnSpaceScan.BackColor = [System.Drawing.ColorTranslator]::FromHtml($script:Theme.Primary)
-  $script:BtnSpaceScan.ForeColor = [System.Drawing.Color]::White; $script:BtnSpaceScan.FlatStyle = 'Flat'
-  $script:BtnSpaceScan.Location = New-Object System.Drawing.Point(126, 8); $script:BtnSpaceScan.Size = New-Object System.Drawing.Size(90, 28)
-  $top.Controls.Add($script:BtnSpaceScan)
-  $script:BtnSpaceStop = New-ModernButton
-  $script:BtnSpaceStop.Text = '停止'
-  $script:BtnSpaceStop.Location = New-Object System.Drawing.Point(222, 8); $script:BtnSpaceStop.Size = New-Object System.Drawing.Size(60, 28); $script:BtnSpaceStop.Enabled = $false
-  $top.Controls.Add($script:BtnSpaceStop)
-  $script:BtnSpaceUp = New-ModernButton
-  $script:BtnSpaceUp.Text = '上级目录'
-  $script:BtnSpaceUp.Location = New-Object System.Drawing.Point(288, 8); $script:BtnSpaceUp.Size = New-Object System.Drawing.Size(76, 28); $script:BtnSpaceUp.Enabled = $false
-  $top.Controls.Add($script:BtnSpaceUp)
-  $script:ProgSpace = New-ModernProgressBar
-  $script:ProgSpace.Location = New-Object System.Drawing.Point(372, 13); $script:ProgSpace.Size = New-Object System.Drawing.Size(200, 16)
-  $top.Controls.Add($script:ProgSpace)
-  $script:LblSpaceStatus = New-Object System.Windows.Forms.Label
-  $script:LblSpaceStatus.Text = '就绪'; $script:LblSpaceStatus.Location = New-Object System.Drawing.Point(580, 14); $script:LblSpaceStatus.AutoSize = $true
-  $top.Controls.Add($script:LblSpaceStatus)
-
-  $script:LblSpacePath = New-Object System.Windows.Forms.Label
-  $script:LblSpacePath.Text = '（扫描后双击目录逐级下钻）'
-  $script:LblSpacePath.Font = New-Object System.Drawing.Font('Consolas', 9, [System.Drawing.FontStyle]::Bold)
-  $script:LblSpacePath.ForeColor = [System.Drawing.ColorTranslator]::FromHtml($script:Theme.Primary)
-  $script:LblSpacePath.Location = New-Object System.Drawing.Point(592, 14)
-  $script:LblSpacePath.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Right
-  $script:LblSpacePath.AutoEllipsis = $true
-  $top.Controls.Add($script:LblSpacePath)
-
-  $script:LvSpace = New-Object System.Windows.Forms.ListView
-  $script:LvSpace.Dock = 'Fill'
-  $script:LvSpace.View = 'Details'; $script:LvSpace.FullRowSelect = $true; $script:LvSpace.GridLines = $false; $script:LvSpace.HideSelection = $false
-  $script:LvSpace.UseCompatibleStateImageBehavior = $false
-  $null = $script:LvSpace.Columns.Add('名称', 260)
-  $null = $script:LvSpace.Columns.Add('总占用', 110)
-  $null = $script:LvSpace.Columns.Add('占比', 70)
-  $null = $script:LvSpace.Columns.Add('自身文件', 110)
-  $null = $script:LvSpace.Columns.Add('完整路径', 540)
-  Register-ColumnSort -Lv $script:LvSpace -NumericCols @(1, 2, 3)
-
-  $foot = New-Object System.Windows.Forms.Panel
-  $foot.Dock = 'Bottom'; $foot.Height = 48; $foot.BackColor = [System.Drawing.Color]::White
-  $foot.Width = 1200
-  $script:LblSpaceHint = New-Object System.Windows.Forms.Label
-  $script:LblSpaceHint.Text = '双击行进入目录；右键可打开/复制/删除到回收站。'
-  $script:LblSpaceHint.ForeColor = [System.Drawing.ColorTranslator]::FromHtml($script:Theme.Text)
-  $script:LblSpaceHint.Location = New-Object System.Drawing.Point(12, 15); $script:LblSpaceHint.AutoSize = $true
-  $foot.Controls.Add($script:LblSpaceHint)
-  $script:BtnSpaceDel = New-ModernButton
-  $script:BtnSpaceDel.Text = '删除选中(回收站)'
-  $script:BtnSpaceDel.BackColor = [System.Drawing.ColorTranslator]::FromHtml($script:Theme.Red)
-  $script:BtnSpaceDel.ForeColor = [System.Drawing.Color]::White; $script:BtnSpaceDel.FlatStyle = 'Flat'
-  $script:BtnSpaceDel.Location = New-Object System.Drawing.Point(1030, 9); $script:BtnSpaceDel.Size = New-Object System.Drawing.Size(140, 30)
-  $script:BtnSpaceDel.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Right
-  $foot.Controls.Add($script:BtnSpaceDel)
-
-  $p.Controls.Add($foot)
-  $p.Controls.Add($top)
-  $p.Controls.Add($script:LvSpace)
-
-  $menuSp = New-Object System.Windows.Forms.ContextMenuStrip
-  $miSpOpen = New-Object System.Windows.Forms.ToolStripMenuItem('打开所在文件夹')
-  $miSpCopy = New-Object System.Windows.Forms.ToolStripMenuItem('复制路径')
-  $miSpDel = New-Object System.Windows.Forms.ToolStripMenuItem('删除到回收站')
-  $null = $menuSp.Items.Add($miSpOpen); $null = $menuSp.Items.Add($miSpCopy); $null = $menuSp.Items.Add($miSpDel)
-  $script:LvSpace.ContextMenuStrip = $menuSp
-
-  $script:SpaceOwn = $null     # Dictionary[dir] = 直接文件字节
-  $script:SpaceTotal = $null   # Dictionary[dir] = 含子孙合计字节
-  $script:SpaceDir = $null     # 当前浏览目录
-
-  function script:Space-FillChildren {
-    param([string]$Dir)
-    if (-not $script:SpaceTotal) { return }
-    if (-not $script:SpaceTotal.ContainsKey($Dir)) { return }
-    $script:SpaceDir = $Dir
-    $script:LblSpacePath.Text = $Dir
-    $dirTotal = $script:SpaceTotal[$Dir]
-    $script:BtnSpaceUp.Enabled = ($Dir.LastIndexOf('\') -gt 2)
-    $script:LvSpace.BeginUpdate()
-    $script:LvSpace.Items.Clear()
-    $kids = New-Object System.Collections.Generic.List[object]
-    foreach ($k in $script:SpaceTotal.Keys) {
-      if ($k.Length -gt $Dir.Length -and $k.StartsWith($Dir, 'OrdinalIgnoreCase')) {
-        $rest = $k.Substring($Dir.Length)
-        if ($rest.StartsWith('\') -and ($rest.IndexOf('\', 1) -lt 0)) {
-          $kids.Add([pscustomobject]@{ Path = $k; Name = $rest.Substring(1) })
-        }
-      }
-    }
-    foreach ($kd in ($kids | Sort-Object { -$script:SpaceTotal[$_.Path] })) {
-      $tot = $script:SpaceTotal[$kd.Path]
-      $ownB = if ($script:SpaceOwn.ContainsKey($kd.Path)) { $script:SpaceOwn[$kd.Path] } else { 0L }
-      $pct = if ($dirTotal -gt 0) { ('{0:P1}' -f ($tot / $dirTotal)) } else { '' }
-      $li = [System.Windows.Forms.ListViewItem]::new([string[]]@($kd.Name, (Format-Bytes $tot), $pct, (Format-Bytes $ownB), $kd.Path))
-      $li.Tag = $kd.Path
-      if ($tot -gt 1GB) { $li.ForeColor = [System.Drawing.ColorTranslator]::FromHtml($script:Theme.Red) }
-      elseif ($tot -gt 100MB) { $li.ForeColor = [System.Drawing.ColorTranslator]::FromHtml($script:Theme.Yellow) }
-      else { $li.ForeColor = [System.Drawing.ColorTranslator]::FromHtml($script:Theme.Green) }
-      $null = $script:LvSpace.Items.Add($li)
-    }
-    $script:LvSpace.EndUpdate()
-    $script:LblSpaceStatus.Text = ('当前目录合计: {0}' -f (Format-Bytes $dirTotal))
-  }
-
-  $script:SpaceWorker = New-Object System.ComponentModel.BackgroundWorker
-  $script:SpaceWorker.WorkerSupportsCancellation = $true
-  $script:SpaceWorker.WorkerReportsProgress = $true
-  $spaceDoWork = {
-    param($s, $e)
-    $own = Get-DirSizes -Root ([string]$e.Argument) -W $s
-    if ($s.CancellationPending) { $e.Cancel = $true; return }
-    $e.Result = @{ Own = $own; Total = (Get-MergedDirTotals $own) }
-  }
-  Register-WorkerBody -Worker $script:SpaceWorker -Name 'Space' -ScriptBlock $spaceDoWork
-  $script:SpaceWorker.add_ProgressChanged({
-    param($s, $e)
-    $script:LblSpaceStatus.Text = [string]$e.UserState
-  })
-  $script:SpaceWorker.add_RunWorkerCompleted({
-    param($s, $e)
-    $script:BtnSpaceScan.Enabled = $true; $script:BtnSpaceStop.Enabled = $false
-    $script:ProgSpace.Style = 'Continuous'; $script:ProgSpace.Value = 0
-    if ($e.Error) { $script:LblSpaceStatus.Text = '扫描出错'; Log-Line ('空间分析出错: ' + $e.Error.Message); return }
-    if ($e.Cancelled) { $script:LblSpaceStatus.Text = '已取消'; return }
-    $script:SpaceOwn = $e.Result.Own
-    $script:SpaceTotal = $e.Result.Total
-    $root = [string]$script:CmbSpaceDrive.SelectedItem + '\'
-    if (-not $script:SpaceTotal.ContainsKey($root)) { $root = $root.TrimEnd('\') }
-    Space-FillChildren $root
-    Log-Line ('空间分析完成: {0} 共 {1} 个目录' -f $script:CmbSpaceDrive.SelectedItem, $script:SpaceTotal.Count)
-  })
-
-  $script:BtnSpaceScan.add_Click({
-    $drive = [string]$script:CmbSpaceDrive.SelectedItem
-    if (-not $drive) {
-      try { [System.Windows.Forms.MessageBox]::Show('请先选择磁盘。', '提示', 'OK', 'Information') } catch { }
-      return
-    }
-    $script:BtnSpaceScan.Enabled = $false; $script:BtnSpaceStop.Enabled = $true
-    $script:ProgSpace.Style = 'Marquee'; $script:ProgSpace.MarqueeAnimationSpeed = 30
-    $script:LblSpaceStatus.Text = '扫描中...'
-    $script:LvSpace.Items.Clear(); $script:SpaceOwn = $null; $script:SpaceTotal = $null
-    Log-Line ('空间分析扫描开始: ' + $drive)
-    $script:SpaceWorker.RunWorkerAsync(($drive + '\'))
-  })
-  $script:BtnSpaceStop.add_Click({ $script:SpaceWorker.CancelAsync() })
-  $script:BtnSpaceUp.add_Click({
-    if ($script:SpaceDir) {
-      $pi = $script:SpaceDir.LastIndexOf('\')
-      if ($pi -gt 2) {
-        $up = $script:SpaceDir.Substring(0, $pi)
-        if (-not $up.EndsWith('\')) { $up += '\' }
-        Space-FillChildren $up
-      } elseif ($pi -eq 2) {
-        Space-FillChildren ($script:SpaceDir.Substring(0, 3))
-      }
-    }
-  })
-  $script:LvSpace.add_DoubleClick({
-    if ($script:LvSpace.SelectedItems.Count -gt 0) {
-      $path = [string]$script:LvSpace.SelectedItems[0].Tag
-      if ($script:SpaceTotal -and $script:SpaceTotal.ContainsKey($path)) { Space-FillChildren $path }
-    }
-  })
-  $miSpOpen.add_Click({
-    if ($script:LvSpace.SelectedItems.Count -gt 0) { Open-InExplorer -Path ([string]$script:LvSpace.SelectedItems[0].Tag) -Select }
-  })
-  $miSpCopy.add_Click({
-    if ($script:LvSpace.SelectedItems.Count -gt 0) {
-      try { [System.Windows.Forms.Clipboard]::SetText([string]$script:LvSpace.SelectedItems[0].Tag) } catch { }
-    }
-  })
-  $script:BtnSpaceDel.add_Click({
-    $sel = @($script:LvSpace.SelectedItems)
-    if ($sel.Count -eq 0) {
-      try { [System.Windows.Forms.MessageBox]::Show('请先选择要删除的目录。', '提示', 'OK', 'Information') } catch { }
-      return
-    }
-    $r = [System.Windows.Forms.MessageBox]::Show(('确定将选中的 {0} 个目录删除到回收站？' -f $sel.Count), '确认删除', 'YesNo', 'Warning')
-    if ($r -ne 'Yes') { return }
-    $rel = 0L; $ok = 0
-    foreach ($li in $sel) {
-      $path = [string]$li.Tag
-      # 以"删除前存在且删除后不存在"判定成功（空目录回收返回 0 字节，不能用字节数判成败）
-      $existed = Test-Path -LiteralPath $path
-      $b = Remove-UserPathToRecycle $path
-      if (-not ($existed -and -not (Test-Path -LiteralPath $path))) { continue }   # 失败：跳过且不动索引
-      $ok++; $rel += $b
-      # 仅在删除成功后同步索引：移除该目录及其子孙，并把释放量从各级祖先合计中扣减
-      try {
-        foreach ($k in @($script:SpaceTotal.Keys)) {
-          if ($k -eq $path -or $k.StartsWith($path + '\', 'OrdinalIgnoreCase')) {
-            $script:SpaceTotal.Remove($k)
-            if ($script:SpaceOwn.ContainsKey($k)) { $script:SpaceOwn.Remove($k) }
-          }
-        }
-        $cur = $path
-        while ($true) {
-          $pi = $cur.LastIndexOf('\')
-          if ($pi -lt 2) { break }
-          $cur = $cur.Substring(0, $pi)
-          if ($script:SpaceTotal.ContainsKey($cur)) { $script:SpaceTotal[$cur] -= $b }
-          if ($cur.EndsWith('\')) { break }
-        }
-      } catch { }
-    }
-    Log-Line ('空间分析删除: 成功 {0}/{1}, 释放 {2}' -f $ok, $sel.Count, (Format-Bytes $rel))
-    if ($script:SpaceDir) { Space-FillChildren $script:SpaceDir }
-    try {
-      [System.Windows.Forms.MessageBox]::Show(('已删除 {0} 个目录，释放 {1}；占用/受保护自动跳过。' -f $ok, (Format-Bytes $rel)), '完成', 'OK', 'Information')
-    } catch { }
-  })
-  $miSpDel.add_Click({ $script:BtnSpaceDel.PerformClick() })
-
-  return $p
-}
+function New-SpacePage { return (New-WpfPlaceholder -Title '空间分析' -Msg '扫描目录占用并支持下钻（WPF 重构中）') }
 
 # ---------- Tab: 大文件分析 ----------
 function Get-LargeFiles {
@@ -1329,175 +1116,7 @@ function Get-LargeFiles {
   return $result
 }
 
-function New-LargeFilesPage {
-  $p = New-Object System.Windows.Forms.TabPage
-  $p.Text = '大文件'
-  $p.BackColor = [System.Drawing.ColorTranslator]::FromHtml($script:Theme.Bg)
-  # 先按设计宽度设置：底部操作条及其右锚定删除按钮首次布局按真实宽度计算
-  $p.Width = 1200
-
-  $top = New-Object System.Windows.Forms.Panel
-  $top.Dock = 'Top'; $top.Height = 44; $top.BackColor = [System.Drawing.Color]::White
-
-  $lblDrv = New-Object System.Windows.Forms.Label
-  $lblDrv.Text = '磁盘:'; $lblDrv.Location = New-Object System.Drawing.Point(12, 13); $lblDrv.AutoSize = $true
-  $top.Controls.Add($lblDrv)
-  $script:CmbDrive = New-Object System.Windows.Forms.ComboBox
-  $script:CmbDrive.Location = New-Object System.Drawing.Point(52, 10); $script:CmbDrive.Width = 66
-  foreach ($d in (Get-FixedDrives)) { $null = $script:CmbDrive.Items.Add($d) }
-  if ($script:CmbDrive.Items.Count -gt 0) { $script:CmbDrive.SelectedIndex = 0 }
-  $top.Controls.Add($script:CmbDrive)
-
-  $lblTh = New-Object System.Windows.Forms.Label
-  $lblTh.Text = '最小大小:'; $lblTh.Location = New-Object System.Drawing.Point(130, 13); $lblTh.AutoSize = $true
-  $top.Controls.Add($lblTh)
-  $script:CmbTh = New-Object System.Windows.Forms.ComboBox
-  $script:CmbTh.Location = New-Object System.Drawing.Point(196, 10); $script:CmbTh.Width = 90
-  $null = $script:CmbTh.Items.Add('100 MB'); $null = $script:CmbTh.Items.Add('300 MB'); $null = $script:CmbTh.Items.Add('500 MB'); $null = $script:CmbTh.Items.Add('1 GB')
-  $script:CmbTh.SelectedIndex = 0
-  $top.Controls.Add($script:CmbTh)
-
-  $script:BtnScanL = New-ModernButton
-  $script:BtnScanL.Text = '开始扫描'
-  $script:BtnScanL.BackColor = [System.Drawing.ColorTranslator]::FromHtml($script:Theme.Primary)
-  $script:BtnScanL.ForeColor = [System.Drawing.Color]::White; $script:BtnScanL.FlatStyle = 'Flat'
-  $script:BtnScanL.Location = New-Object System.Drawing.Point(300, 8); $script:BtnScanL.Size = New-Object System.Drawing.Size(90, 28)
-  $top.Controls.Add($script:BtnScanL)
-  $script:BtnStopL = New-ModernButton
-  $script:BtnStopL.Text = '停止'
-  $script:BtnStopL.Location = New-Object System.Drawing.Point(396, 8); $script:BtnStopL.Size = New-Object System.Drawing.Size(60, 28); $script:BtnStopL.Enabled = $false
-  $top.Controls.Add($script:BtnStopL)
-  $script:ProgL = New-ModernProgressBar
-  $script:ProgL.Location = New-Object System.Drawing.Point(466, 13); $script:ProgL.Size = New-Object System.Drawing.Size(220, 16)
-  $top.Controls.Add($script:ProgL)
-  $script:LblL = New-Object System.Windows.Forms.Label
-  $script:LblL.Text = '就绪'; $script:LblL.Location = New-Object System.Drawing.Point(694, 14); $script:LblL.AutoSize = $true
-  $top.Controls.Add($script:LblL)
-
-  $script:LvLarge = New-Object System.Windows.Forms.ListView
-  $script:LvLarge.Dock = 'Fill'
-  $script:LvLarge.View = 'Details'; $script:LvLarge.FullRowSelect = $true; $script:LvLarge.GridLines = $false; $script:LvLarge.HideSelection = $false
-  $script:LvLarge.UseCompatibleStateImageBehavior = $false
-  $null = $script:LvLarge.Columns.Add('名称', 220)
-  $null = $script:LvLarge.Columns.Add('大小', 90)
-  $null = $script:LvLarge.Columns.Add('修改时间', 130)
-  $null = $script:LvLarge.Columns.Add('路径', 560)
-  Register-ColumnSort -Lv $script:LvLarge -NumericCols @(1)
-
-  $foot = New-Object System.Windows.Forms.Panel
-  $foot.Dock = 'Bottom'; $foot.Height = 48; $foot.BackColor = [System.Drawing.Color]::White
-  # 先按设计宽度设置（与主窗 1200 一致）：右锚定删除按钮首次布局时按真实右缘计算
-  $foot.Width = 1200
-  $script:LblLTotal = New-Object System.Windows.Forms.Label
-  $script:LblLTotal.Text = '共 0 个文件'
-  $script:LblLTotal.Font = New-Object System.Drawing.Font($script:Theme.FontUi,10, [System.Drawing.FontStyle]::Bold)
-  $script:LblLTotal.ForeColor = [System.Drawing.ColorTranslator]::FromHtml($script:Theme.Primary)
-  $script:LblLTotal.Location = New-Object System.Drawing.Point(12, 14); $script:LblLTotal.AutoSize = $true
-  $foot.Controls.Add($script:LblLTotal)
-  $script:BtnDelL = New-ModernButton
-  $script:BtnDelL.Text = '删除选中(回收站)'
-  $script:BtnDelL.BackColor = [System.Drawing.ColorTranslator]::FromHtml($script:Theme.Red)
-  $script:BtnDelL.ForeColor = [System.Drawing.Color]::White; $script:BtnDelL.FlatStyle = 'Flat'
-  $script:BtnDelL.Location = New-Object System.Drawing.Point(1030, 9); $script:BtnDelL.Size = New-Object System.Drawing.Size(140, 30)
-  $script:BtnDelL.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Right
-  $foot.Controls.Add($script:BtnDelL)
-
-  $p.Controls.Add($foot)
-  $p.Controls.Add($top)
-  $p.Controls.Add($script:LvLarge)
-
-  $menu = New-Object System.Windows.Forms.ContextMenuStrip
-  $miOpen = New-Object System.Windows.Forms.ToolStripMenuItem('打开所在文件夹')
-  $miCopy = New-Object System.Windows.Forms.ToolStripMenuItem('复制路径')
-  $miDelL = New-Object System.Windows.Forms.ToolStripMenuItem('删除到回收站')
-  $null = $menu.Items.Add($miOpen); $null = $menu.Items.Add($miCopy); $null = $menu.Items.Add($miDelL)
-  $script:LvLarge.ContextMenuStrip = $menu
-
-  $script:LfWorker = New-Object System.ComponentModel.BackgroundWorker
-  $script:LfWorker.WorkerSupportsCancellation = $true
-  $script:LfWorker.WorkerReportsProgress = $true
-  $lfDoWork = {
-    param($s, $e)
-    $a = $e.Argument
-    $list = Get-LargeFiles -Root $a.Root -Threshold $a.Threshold -W $s
-    if ($s.CancellationPending) { $e.Cancel = $true; return }
-    $e.Result = $list
-  }
-  Register-WorkerBody -Worker $script:LfWorker -Name 'Lf' -ScriptBlock $lfDoWork
-  $script:LfWorker.add_ProgressChanged({
-    param($s, $e)
-    $script:LblL.Text = [string]$e.UserState
-  })
-  $script:LfWorker.add_RunWorkerCompleted({
-    param($s, $e)
-    $script:BtnScanL.Enabled = $true; $script:BtnStopL.Enabled = $false
-    $script:ProgL.Style = 'Continuous'; $script:ProgL.Value = 0
-    if ($e.Cancelled) { $script:LblL.Text = '已取消'; return }
-    $rows = @($e.Result)
-    $script:LvLarge.BeginUpdate(); $script:LvLarge.Items.Clear()
-    $totalBytes = 0L
-    foreach ($r in $rows) {
-      $totalBytes += [long]$r.Size
-      $li = [System.Windows.Forms.ListViewItem]::new([string[]]@($r.Name, (Format-Bytes $r.Size), $r.Modified.ToString('yyyy-MM-dd HH:mm'), $r.Path))
-      $li.Tag = $r
-      $null = $script:LvLarge.Items.Add($li)
-    }
-    $script:LvLarge.EndUpdate()
-    $script:LblLTotal.Text = ('共 {0} 个文件 / {1}' -f $rows.Count, (Format-Bytes $totalBytes))
-    $script:LblL.Text = '完成'
-    Log-Line ('大文件扫描完成: {0} 个' -f $rows.Count)
-  })
-
-  $script:BtnScanL.add_Click({
-    $drive = [string]$script:CmbDrive.SelectedItem
-    if (-not $drive) {
-      try { [System.Windows.Forms.MessageBox]::Show('请先选择磁盘。', '提示', 'OK', 'Information') } catch { }
-      return
-    }
-    $mb = switch ([string]$script:CmbTh.SelectedItem) { '300 MB' { 300 } '500 MB' { 500 } '1 GB' { 1024 } default { 100 } }
-    $script:BtnScanL.Enabled = $false; $script:BtnStopL.Enabled = $true
-    $script:ProgL.Style = 'Marquee'; $script:ProgL.MarqueeAnimationSpeed = 30
-    $script:LblL.Text = '扫描中...'
-    $script:LvLarge.Items.Clear(); $script:LblLTotal.Text = '共 0 个文件'
-    Log-Line ('大文件扫描开始: {0} >= {1}' -f $drive, $script:CmbTh.SelectedItem)
-    $script:LfWorker.RunWorkerAsync(@{ Root = ($drive + '\'); Threshold = ([long]$mb * 1024 * 1024) })
-  })
-  $script:BtnStopL.add_Click({ $script:LfWorker.CancelAsync() })
-  $miOpen.add_Click({
-    if ($script:LvLarge.SelectedItems.Count -gt 0) { Open-InExplorer -Path $script:LvLarge.SelectedItems[0].Tag.Path -Select }
-  })
-  $miCopy.add_Click({
-    if ($script:LvLarge.SelectedItems.Count -gt 0) { try { [System.Windows.Forms.Clipboard]::SetText([string]$script:LvLarge.SelectedItems[0].Tag.Path) } catch { } }
-  })
-  $script:BtnDelL.add_Click({
-    $sel = @($script:LvLarge.SelectedItems | ForEach-Object { $_.Tag })
-    if ($sel.Count -eq 0) {
-      try { [System.Windows.Forms.MessageBox]::Show('请先选择要删除的大文件。', '提示', 'OK', 'Information') } catch { }
-      return
-    }
-    $r = [System.Windows.Forms.MessageBox]::Show(('确定将选中的 {0} 个大文件删除到回收站？' -f $sel.Count), '确认删除', 'YesNo', 'Warning')
-    if ($r -ne 'Yes') { return }
-    $rel = 0L; $ok = 0; $doneRows = @()
-    foreach ($li in @($script:LvLarge.SelectedItems)) {
-      $it = $li.Tag
-      # 以"删除前存在且删除后不存在"判定成功；失败的行保留在列表中，文件也在
-      $existed = Test-Path -LiteralPath $it.Path
-      $b = Remove-UserPathToRecycle $it.Path
-      if ($existed -and -not (Test-Path -LiteralPath $it.Path)) { $ok++; $rel += $b; $doneRows += $li }
-    }
-    Log-Line ('大文件删除: 成功 {0}/{1}, 释放 {2}' -f $ok, $sel.Count, (Format-Bytes $rel))
-    foreach ($li in $doneRows) { $script:LvLarge.Items.Remove($li) }
-    $totalBytes = 0L
-    foreach ($li2 in $script:LvLarge.Items) { if ($li2.Tag) { $totalBytes += [long]$li2.Tag.Size } }
-    $script:LblLTotal.Text = ('共 {0} 个文件 / {1}' -f $script:LvLarge.Items.Count, (Format-Bytes $totalBytes))
-    try {
-      [System.Windows.Forms.MessageBox]::Show(('已删除 {0} 个大文件，释放 {1}；被占用/受保护的文件自动跳过。' -f $ok, (Format-Bytes $rel)), '完成', 'OK', 'Information')
-    } catch { }
-  })
-  $miDelL.add_Click({ $script:BtnDelL.PerformClick() })
-
-  return $p
-}
+function New-LargeFilesPage { return (New-WpfPlaceholder -Title '大文件' -Msg '列出大文件并按体积排序（WPF 重构中）') }
 
 # ---------- Tab: 空文件夹清理 ----------
 function Get-EmptyDirs {
@@ -1564,172 +1183,7 @@ function Get-EmptyDirs {
   return $result
 }
 
-function New-EmptyDirPage {
-  $p = New-Object System.Windows.Forms.TabPage
-  $p.Text = '空文件夹'
-  $p.BackColor = [System.Drawing.ColorTranslator]::FromHtml($script:Theme.Bg)
-  $p.Width = 1200
-
-  $top = New-Object System.Windows.Forms.Panel
-  $top.Dock = 'Top'; $top.Height = 44; $top.BackColor = [System.Drawing.Color]::White
-
-  $lblDrv = New-Object System.Windows.Forms.Label
-  $lblDrv.Text = '磁盘:'; $lblDrv.Location = New-Object System.Drawing.Point(12, 13); $lblDrv.AutoSize = $true
-  $top.Controls.Add($lblDrv)
-  $script:CmbDriveE = New-Object System.Windows.Forms.ComboBox
-  $script:CmbDriveE.Location = New-Object System.Drawing.Point(52, 10); $script:CmbDriveE.Width = 66
-  foreach ($d in (Get-FixedDrives)) { $null = $script:CmbDriveE.Items.Add($d) }
-  if ($script:CmbDriveE.Items.Count -gt 0) { $script:CmbDriveE.SelectedIndex = 0 }
-  $top.Controls.Add($script:CmbDriveE)
-
-  $script:BtnScanE = New-ModernButton
-  $script:BtnScanE.Text = '开始扫描'
-  $script:BtnScanE.BackColor = [System.Drawing.ColorTranslator]::FromHtml($script:Theme.Primary)
-  $script:BtnScanE.ForeColor = [System.Drawing.Color]::White; $script:BtnScanE.FlatStyle = 'Flat'
-  $script:BtnScanE.Location = New-Object System.Drawing.Point(132, 8); $script:BtnScanE.Size = New-Object System.Drawing.Size(90, 28)
-  $top.Controls.Add($script:BtnScanE)
-  $script:BtnStopE = New-ModernButton
-  $script:BtnStopE.Text = '停止'
-  $script:BtnStopE.Location = New-Object System.Drawing.Point(228, 8); $script:BtnStopE.Size = New-Object System.Drawing.Size(60, 28); $script:BtnStopE.Enabled = $false
-  $top.Controls.Add($script:BtnStopE)
-  $script:ProgE = New-ModernProgressBar
-  $script:ProgE.Location = New-Object System.Drawing.Point(298, 13); $script:ProgE.Size = New-Object System.Drawing.Size(220, 16)
-  $top.Controls.Add($script:ProgE)
-  $script:LblE = New-Object System.Windows.Forms.Label
-  $script:LblE.Text = '就绪'; $script:LblE.Location = New-Object System.Drawing.Point(526, 14); $script:LblE.AutoSize = $true
-  $top.Controls.Add($script:LblE)
-  $script:LblEHint = New-Object System.Windows.Forms.Label
-  $script:LblEHint.Text = '空子树只显示顶端目录，删除时整个空目录树一并进回收站'
-  $script:LblEHint.Location = New-Object System.Drawing.Point(660, 14); $script:LblEHint.AutoSize = $true
-  $script:LblEHint.ForeColor = [System.Drawing.Color]::Gray
-  $top.Controls.Add($script:LblEHint)
-
-  $script:LvEmpty = New-Object System.Windows.Forms.ListView
-  $script:LvEmpty.Dock = 'Fill'
-  $script:LvEmpty.View = 'Details'; $script:LvEmpty.FullRowSelect = $true; $script:LvEmpty.GridLines = $false; $script:LvEmpty.HideSelection = $false
-  $script:LvEmpty.UseCompatibleStateImageBehavior = $false
-  $script:LvEmpty.CheckBoxes = $true
-  $null = $script:LvEmpty.Columns.Add('名称', 240)
-  $null = $script:LvEmpty.Columns.Add('完整路径', 720)
-  Register-ColumnSort -Lv $script:LvEmpty
-
-  $foot = New-Object System.Windows.Forms.Panel
-  $foot.Dock = 'Bottom'; $foot.Height = 48; $foot.BackColor = [System.Drawing.Color]::White
-  $foot.Width = 1200
-  $script:LblETotal = New-Object System.Windows.Forms.Label
-  $script:LblETotal.Text = '共 0 个空目录'
-  $script:LblETotal.Font = New-Object System.Drawing.Font($script:Theme.FontUi, 10, [System.Drawing.FontStyle]::Bold)
-  $script:LblETotal.ForeColor = [System.Drawing.ColorTranslator]::FromHtml($script:Theme.Primary)
-  $script:LblETotal.Location = New-Object System.Drawing.Point(12, 14); $script:LblETotal.AutoSize = $true
-  $foot.Controls.Add($script:LblETotal)
-  $script:BtnSelAllE = New-ModernButton
-  $script:BtnSelAllE.Text = '全选/反选'
-  $script:BtnSelAllE.Location = New-Object System.Drawing.Point(880, 9); $script:BtnSelAllE.Size = New-Object System.Drawing.Size(90, 30)
-  $script:BtnSelAllE.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Right
-  $foot.Controls.Add($script:BtnSelAllE)
-  $script:BtnDelE = New-ModernButton
-  $script:BtnDelE.Text = '删除选中(回收站)'
-  $script:BtnDelE.BackColor = [System.Drawing.ColorTranslator]::FromHtml($script:Theme.Red)
-  $script:BtnDelE.ForeColor = [System.Drawing.Color]::White; $script:BtnDelE.FlatStyle = 'Flat'
-  $script:BtnDelE.Location = New-Object System.Drawing.Point(978, 9); $script:BtnDelE.Size = New-Object System.Drawing.Size(140, 30)
-  $script:BtnDelE.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Right
-  $foot.Controls.Add($script:BtnDelE)
-
-  $p.Controls.Add($foot)
-  $p.Controls.Add($top)
-  $p.Controls.Add($script:LvEmpty)
-
-  $menu = New-Object System.Windows.Forms.ContextMenuStrip
-  $miOpen = New-Object System.Windows.Forms.ToolStripMenuItem('打开所在文件夹')
-  $miCopy = New-Object System.Windows.Forms.ToolStripMenuItem('复制路径')
-  $miDel = New-Object System.Windows.Forms.ToolStripMenuItem('删除到回收站')
-  $null = $menu.Items.Add($miOpen); $null = $menu.Items.Add($miCopy); $null = $menu.Items.Add($miDel)
-  $script:LvEmpty.ContextMenuStrip = $menu
-
-  $script:EmptyWorker = New-Object System.ComponentModel.BackgroundWorker
-  $script:EmptyWorker.WorkerSupportsCancellation = $true
-  $script:EmptyWorker.WorkerReportsProgress = $true
-  $edDoWork = {
-    param($s, $e)
-    $a = $e.Argument
-    $list = Get-EmptyDirs -Root $a.Root -W $s
-    if ($s.CancellationPending) { $e.Cancel = $true; return }
-    $e.Result = $list
-  }
-  Register-WorkerBody -Worker $script:EmptyWorker -Name 'EmptyDir' -ScriptBlock $edDoWork
-  $script:EmptyWorker.add_ProgressChanged({
-    param($s, $e)
-    $script:LblE.Text = [string]$e.UserState
-  })
-  $script:EmptyWorker.add_RunWorkerCompleted({
-    param($s, $e)
-    $script:BtnScanE.Enabled = $true; $script:BtnStopE.Enabled = $false
-    $script:ProgE.Style = 'Continuous'; $script:ProgE.Value = 0
-    if ($e.Cancelled) { $script:LblE.Text = '已取消'; return }
-    $rows = @($e.Result)
-    $script:LvEmpty.BeginUpdate(); $script:LvEmpty.Items.Clear()
-    foreach ($r in $rows) {
-      $li = [System.Windows.Forms.ListViewItem]::new([string[]]@($r.Name, $r.Path))
-      $li.Tag = $r
-      $null = $script:LvEmpty.Items.Add($li)
-    }
-    $script:LvEmpty.EndUpdate()
-    $script:LblETotal.Text = ('共 {0} 个空目录' -f $rows.Count)
-    $script:LblE.Text = '完成'
-    Log-Line ('空文件夹扫描完成: {0} 个空子树' -f $rows.Count)
-  })
-
-  $script:BtnScanE.add_Click({
-    $drive = [string]$script:CmbDriveE.SelectedItem
-    if (-not $drive) {
-      try { [System.Windows.Forms.MessageBox]::Show('请先选择磁盘。', '提示', 'OK', 'Information') } catch { }
-      return
-    }
-    $script:BtnScanE.Enabled = $false; $script:BtnStopE.Enabled = $true
-    $script:ProgE.Style = 'Marquee'; $script:ProgE.MarqueeAnimationSpeed = 30
-    $script:LblE.Text = '扫描中...'
-    $script:LvEmpty.Items.Clear(); $script:LblETotal.Text = '共 0 个空目录'
-    Log-Line ('空文件夹扫描开始: {0}' -f $drive)
-    $script:EmptyWorker.RunWorkerAsync(@{ Root = ($drive + '\') })
-  })
-  $script:BtnStopE.add_Click({ $script:EmptyWorker.CancelAsync() })
-  $script:BtnSelAllE.add_Click({
-    $allChecked = $true
-    foreach ($li in $script:LvEmpty.Items) { if (-not $li.Checked) { $allChecked = $false; break } }
-    foreach ($li in $script:LvEmpty.Items) { $li.Checked = (-not $allChecked) }
-  })
-  $miOpen.add_Click({
-    if ($script:LvEmpty.SelectedItems.Count -gt 0) { Open-InExplorer -Path $script:LvEmpty.SelectedItems[0].Tag.Path -Select }
-  })
-  $miCopy.add_Click({
-    if ($script:LvEmpty.SelectedItems.Count -gt 0) { try { [System.Windows.Forms.Clipboard]::SetText([string]$script:LvEmpty.SelectedItems[0].Tag.Path) } catch { } }
-  })
-  $script:BtnDelE.add_Click({
-    $sel = @($script:LvEmpty.CheckedItems | ForEach-Object { $_.Tag })
-    if ($sel.Count -eq 0) {
-      try { [System.Windows.Forms.MessageBox]::Show('请先勾选要删除的空目录。', '提示', 'OK', 'Information') } catch { }
-      return
-    }
-    $r = [System.Windows.Forms.MessageBox]::Show(('确定将勾选的 {0} 个空目录树删除到回收站？' -f $sel.Count), '确认删除', 'YesNo', 'Warning')
-    if ($r -ne 'Yes') { return }
-    $ok = 0
-    foreach ($it in $sel) {
-      $existed = Test-Path -LiteralPath $it.Path
-      $null = Remove-UserPathToRecycle $it.Path
-      # 空目录无字节可回收（返回恒为 0），以"删除前存在且删除后不存在"判定成功
-      if ($existed -and -not (Test-Path -LiteralPath $it.Path)) { $ok++ }
-    }
-    Log-Line ('空文件夹删除: 成功 {0}/{1}' -f $ok, $sel.Count)
-    foreach ($li in @($script:LvEmpty.CheckedItems)) { $script:LvEmpty.Items.Remove($li) }
-    $script:LblETotal.Text = ('共 {0} 个空目录' -f $script:LvEmpty.Items.Count)
-    try {
-      [System.Windows.Forms.MessageBox]::Show(('已删除 {0} 个空目录树；被占用/受保护的目录自动跳过。' -f $ok), '完成', 'OK', 'Information')
-    } catch { }
-  })
-  $miDel.add_Click({ $script:BtnDelE.PerformClick() })
-
-  return $p
-}
+function New-EmptyDirPage { return (New-WpfPlaceholder -Title '空文件夹' -Msg '查找可安全删除的空目录（WPF 重构中）') }
 
 # ---------- Tab: 系统加速 ----------
 # ntdll NtSetSystemInformation：SystemMemoryListInformation(80) 释放内存
@@ -1801,120 +1255,7 @@ function Test-IsAdmin {
   } catch { return $false }
 }
 
-function New-SysAccelPage {
-  $p = New-Object System.Windows.Forms.TabPage
-  $p.Text = '系统加速'
-  $p.BackColor = [System.Drawing.ColorTranslator]::FromHtml($script:Theme.Bg)
-
-  $card = New-Object System.Windows.Forms.Panel
-  $card.Location = New-Object System.Drawing.Point(16, 16)
-  $card.Size = New-Object System.Drawing.Size(1160, 200)
-  $card.BackColor = [System.Drawing.Color]::White
-  $p.Controls.Add($card)
-
-  $lblTitle = New-Object System.Windows.Forms.Label
-  $lblTitle.Text = '内存占用'
-  $lblTitle.Font = New-Object System.Drawing.Font($script:Theme.FontUi, 12, [System.Drawing.FontStyle]::Bold)
-  $lblTitle.Location = New-Object System.Drawing.Point(20, 16); $lblTitle.AutoSize = $true
-  $card.Controls.Add($lblTitle)
-
-  $script:LblMemPct = New-Object System.Windows.Forms.Label
-  $script:LblMemPct.Text = '--'
-  $script:LblMemPct.Font = New-Object System.Drawing.Font($script:Theme.FontUi, 16, [System.Drawing.FontStyle]::Bold)
-  $script:LblMemPct.ForeColor = [System.Drawing.ColorTranslator]::FromHtml($script:Theme.Primary)
-  $script:LblMemPct.Location = New-Object System.Drawing.Point(1020, 14); $script:LblMemPct.AutoSize = $true
-  $script:LblMemPct.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Right
-  $card.Controls.Add($script:LblMemPct)
-
-  $script:MemBar = New-ModernProgressBar
-  $script:MemBar.Location = New-Object System.Drawing.Point(20, 56)
-  $script:MemBar.Size = New-Object System.Drawing.Size(1120, 18)
-  $script:MemBar.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Right
-  $card.Controls.Add($script:MemBar)
-
-  $script:LblMemDetail = New-Object System.Windows.Forms.Label
-  $script:LblMemDetail.Text = '已用 -- / 共 --'
-  $script:LblMemDetail.Location = New-Object System.Drawing.Point(20, 84); $script:LblMemDetail.AutoSize = $true
-  $script:LblMemDetail.ForeColor = [System.Drawing.Color]::Gray
-  $card.Controls.Add($script:LblMemDetail)
-
-  $script:BtnPurgeStandby = New-ModernButton
-  $script:BtnPurgeStandby.Text = '清理待机内存'
-  $script:BtnPurgeStandby.BackColor = [System.Drawing.ColorTranslator]::FromHtml($script:Theme.Primary)
-  $script:BtnPurgeStandby.ForeColor = [System.Drawing.Color]::White; $script:BtnPurgeStandby.FlatStyle = 'Flat'
-  $script:BtnPurgeStandby.Location = New-Object System.Drawing.Point(20, 124); $script:BtnPurgeStandby.Size = New-Object System.Drawing.Size(130, 34)
-  $card.Controls.Add($script:BtnPurgeStandby)
-  $script:BtnTrimWS = New-ModernButton
-  $script:BtnTrimWS.Text = '修剪工作集'
-  $script:BtnTrimWS.BackColor = [System.Drawing.ColorTranslator]::FromHtml($script:Theme.Primary)
-  $script:BtnTrimWS.ForeColor = [System.Drawing.Color]::White; $script:BtnTrimWS.FlatStyle = 'Flat'
-  $script:BtnTrimWS.Location = New-Object System.Drawing.Point(160, 124); $script:BtnTrimWS.Size = New-Object System.Drawing.Size(120, 34)
-  $card.Controls.Add($script:BtnTrimWS)
-
-  $script:LblMemAdmin = New-Object System.Windows.Forms.Label
-  $script:LblMemAdmin.Location = New-Object System.Drawing.Point(300, 132); $script:LblMemAdmin.AutoSize = $true
-  $script:LblMemAdmin.ForeColor = [System.Drawing.Color]::Gray
-  $card.Controls.Add($script:LblMemAdmin)
-
-  $script:LblMemResult = New-Object System.Windows.Forms.Label
-  $script:LblMemResult.Location = New-Object System.Drawing.Point(20, 168); $script:LblMemResult.AutoSize = $true
-  $script:LblMemResult.ForeColor = [System.Drawing.Color]::Gray
-  $card.Controls.Add($script:LblMemResult)
-
-  # 每 2 秒刷新内存占用（轻量 P/Invoke，非 WMI）
-  $script:MemTimer = New-Object System.Windows.Forms.Timer
-  $script:MemTimer.Interval = 2000
-  $script:MemTimer.add_Tick({
-    try {
-      $mi = Get-MemoryInfoText
-      if ($mi) {
-        $script:LblMemPct.Text = ('{0}%' -f $mi.Pct)
-        $script:MemBar.Value = [Math]::Min(100, [Math]::Max(0, $mi.Pct))
-        $script:LblMemDetail.Text = ('已用 {0} / 共 {1}' -f (Format-Bytes $mi.UsedBytes), (Format-Bytes $mi.TotalBytes))
-      }
-    } catch { }
-  })
-  $script:MemTimer.Start()
-
-  $script:BtnPurgeStandby.add_Click({
-    if (-not (Test-IsAdmin)) {
-      try { [System.Windows.Forms.MessageBox]::Show('清理待机内存需要管理员权限，请以管理员身份运行本工具。', '提示', 'OK', 'Information') } catch { }
-      return
-    }
-    try {
-      $st = Invoke-MemoryPurge -Command 5
-      if ($st -eq 0) {
-        $script:LblMemResult.Text = ('待机内存已清理 {0}（{1}）' -f (Get-Date -Format 'HH:mm:ss'), 'MemoryPurgeStandbyList')
-      } else {
-        $script:LblMemResult.Text = ('清理失败：NTSTATUS 0x{0:X8}' -f $st)
-      }
-      Log-Line ('系统加速: 清理待机内存 NTSTATUS=0x{0:X8}' -f $st)
-    } catch {
-      $script:LblMemResult.Text = '清理失败：系统不支持该调用'
-      Log-Line ('系统加速: 清理待机内存异常 ' + $_.Exception.Message)
-    }
-  })
-  $script:BtnTrimWS.add_Click({
-    if (-not (Test-IsAdmin)) {
-      try { [System.Windows.Forms.MessageBox]::Show('修剪工作集需要管理员权限，请以管理员身份运行本工具。', '提示', 'OK', 'Information') } catch { }
-      return
-    }
-    try {
-      $st = Invoke-MemoryPurge -Command 3
-      if ($st -eq 0) {
-        $script:LblMemResult.Text = ('工作集已修剪 {0}（{1}）' -f (Get-Date -Format 'HH:mm:ss'), 'MemoryEmptyWorkingSets')
-      } else {
-        $script:LblMemResult.Text = ('修剪失败：NTSTATUS 0x{0:X8}' -f $st)
-      }
-      Log-Line ('系统加速: 修剪工作集 NTSTATUS=0x{0:X8}' -f $st)
-    } catch {
-      $script:LblMemResult.Text = '修剪失败：系统不支持该调用'
-      Log-Line ('系统加速: 修剪工作集异常 ' + $_.Exception.Message)
-    }
-  })
-
-  return $p
-}
+function New-SysAccelPage { return (New-WpfPlaceholder -Title '系统加速' -Msg '内存清理与系统加速（WPF 重构中）') }
 
 # ---------- Tab: 软件占用 ----------
 function Get-InstalledSoftware {
@@ -1946,115 +1287,7 @@ function Get-InstalledSoftware {
   return $rows
 }
 
-function New-SoftwarePage {
-  $p = New-Object System.Windows.Forms.TabPage
-  $p.Text = '软件占用'
-  $p.BackColor = [System.Drawing.ColorTranslator]::FromHtml($script:Theme.Bg)
-
-  $top = New-Object System.Windows.Forms.Panel
-  $top.Dock = 'Top'; $top.Height = 44; $top.BackColor = [System.Drawing.Color]::White
-
-  $btnSoftRefresh = New-ModernButton
-  $btnSoftRefresh.Text = '刷新列表'
-  $btnSoftRefresh.BackColor = [System.Drawing.ColorTranslator]::FromHtml($script:Theme.Primary)
-  $btnSoftRefresh.ForeColor = [System.Drawing.Color]::White; $btnSoftRefresh.FlatStyle = 'Flat'
-  $btnSoftRefresh.Location = New-Object System.Drawing.Point(12, 8); $btnSoftRefresh.Size = New-Object System.Drawing.Size(90, 28)
-  $top.Controls.Add($btnSoftRefresh)
-  $script:BtnSoftReal = New-ModernButton
-  $script:BtnSoftReal.Text = '计算实际占用'
-  $script:BtnSoftReal.Location = New-Object System.Drawing.Point(108, 8); $script:BtnSoftReal.Size = New-Object System.Drawing.Size(120, 28)
-  $top.Controls.Add($script:BtnSoftReal)
-  $script:LblSoft = New-Object System.Windows.Forms.Label
-  $script:LblSoft.Text = '信息展示为主，不提供卸载。'
-  $script:LblSoft.ForeColor = [System.Drawing.ColorTranslator]::FromHtml($script:Theme.Disabled)
-  $script:LblSoft.Location = New-Object System.Drawing.Point(240, 14); $script:LblSoft.AutoSize = $true
-  $top.Controls.Add($script:LblSoft)
-
-  $script:LvSoft = New-Object System.Windows.Forms.ListView
-  $script:LvSoft.Dock = 'Fill'
-  $script:LvSoft.View = 'Details'; $script:LvSoft.FullRowSelect = $true; $script:LvSoft.GridLines = $false; $script:LvSoft.HideSelection = $false
-  $script:LvSoft.UseCompatibleStateImageBehavior = $false
-  $null = $script:LvSoft.Columns.Add('名称', 200)
-  $null = $script:LvSoft.Columns.Add('发布者', 150)
-  $null = $script:LvSoft.Columns.Add('版本', 110)
-  $null = $script:LvSoft.Columns.Add('安装位置', 320)
-  $null = $script:LvSoft.Columns.Add('注册大小', 80)
-  $null = $script:LvSoft.Columns.Add('实际占用', 90)
-  Register-ColumnSort -Lv $script:LvSoft -NumericCols @(4, 5)
-
-  $menuS = New-Object System.Windows.Forms.ContextMenuStrip
-  $miSoftOpen = New-Object System.Windows.Forms.ToolStripMenuItem('打开安装目录')
-  $miSoftCopy = New-Object System.Windows.Forms.ToolStripMenuItem('复制安装路径')
-  $null = $menuS.Items.Add($miSoftOpen); $null = $menuS.Items.Add($miSoftCopy)
-  $script:LvSoft.ContextMenuStrip = $menuS
-
-  $p.Controls.Add($top)
-  $p.Controls.Add($script:LvSoft)
-
-  function script:Fill-SoftwareList {
-    $script:LvSoft.BeginUpdate(); $script:LvSoft.Items.Clear()
-    foreach ($s in (Get-InstalledSoftware)) {
-      $realTxt = if ($s.RealBytes -gt 0) { Format-Bytes $s.RealBytes } else { '' }
-      $regTxt = if ($s.RegKB -gt 0) { Format-Bytes ($s.RegKB * 1024) } else { '' }
-      $li = [System.Windows.Forms.ListViewItem]::new([string[]]@($s.Name, $s.Publisher, $s.Version, $s.Location, $regTxt, $realTxt))
-      $li.Tag = $s
-      $null = $script:LvSoft.Items.Add($li)
-    }
-    $script:LvSoft.EndUpdate()
-    $script:LblSoft.Text = ('共 {0} 个已安装软件' -f $script:LvSoft.Items.Count)
-  }
-
-  $script:SoftWorker = New-Object System.ComponentModel.BackgroundWorker
-  $softDoWork = {
-    param($s, $e)
-    $row = $e.Argument
-    $bytes = 0L
-    if ($row.Location -and (Test-Path -LiteralPath $row.Location)) {
-      try { $bytes = Measure-DirBytes $row.Location } catch { $bytes = 0L }
-    }
-    $e.Result = @{ Row = $row; Bytes = $bytes }
-  }
-  Register-WorkerBody -Worker $script:SoftWorker -Name 'Soft' -ScriptBlock $softDoWork
-  $script:SoftWorker.add_RunWorkerCompleted({
-    param($s, $e)
-    $script:BtnSoftReal.Enabled = $true
-    $r = $e.Result
-    $r.Row.RealBytes = $r.Bytes
-    foreach ($li in $script:LvSoft.Items) {
-      if ($li.Tag -eq $r.Row) {
-        $li.SubItems[5].Text = if ($r.Bytes -gt 0) { Format-Bytes $r.Bytes } else { '（不可测/无位置）' }
-        break
-      }
-    }
-    Log-Line ('实际占用: {0} = {1}' -f $r.Row.Name, (Format-Bytes $r.Bytes))
-  })
-
-  $btnSoftRefresh.add_Click({ Fill-SoftwareList; Log-Line ('软件列表已刷新: {0} 项' -f $script:LvSoft.Items.Count) })
-  $script:BtnSoftReal.add_Click({
-    if ($script:LvSoft.SelectedItems.Count -eq 0) {
-      try { [System.Windows.Forms.MessageBox]::Show('请先选择要计算占用的一项软件。', '提示', 'OK', 'Information') } catch { }
-      return
-    }
-    $row = $script:LvSoft.SelectedItems[0].Tag
-    if (-not $row.Location -or -not (Test-Path -LiteralPath $row.Location)) {
-      try { [System.Windows.Forms.MessageBox]::Show('该项未记录安装位置，无法计算实际占用。', '提示', 'OK', 'Information') } catch { }
-      return
-    }
-    $script:BtnSoftReal.Enabled = $false
-    $script:SoftWorker.RunWorkerAsync($row)
-  })
-  $miSoftOpen.add_Click({
-    if ($script:LvSoft.SelectedItems.Count -gt 0 -and $script:LvSoft.SelectedItems[0].Tag.Location) {
-      Open-InExplorer -Path $script:LvSoft.SelectedItems[0].Tag.Location
-    }
-  })
-  $miSoftCopy.add_Click({
-    if ($script:LvSoft.SelectedItems.Count -gt 0) { try { [System.Windows.Forms.Clipboard]::SetText([string]$script:LvSoft.SelectedItems[0].Tag.Location) } catch { } }
-  })
-
-  Fill-SoftwareList
-  return $p
-}
+function New-SoftwarePage { return (New-WpfPlaceholder -Title '软件占用' -Msg '已安装软件与体积（WPF 重构中）') }
 
 # ---------- Tab: 重复文件检测 ----------
 function Get-DupeGroups {
@@ -2136,159 +1369,7 @@ function Get-DupeGroups {
   return $result
 }
 
-function New-DupeFilesPage {
-  $p = New-Object System.Windows.Forms.TabPage
-  $p.Text = '重复文件'
-  $p.BackColor = [System.Drawing.ColorTranslator]::FromHtml($script:Theme.Bg)
-  # 先按设计宽度设置：底部操作条及其右锚定删除按钮首次布局按真实宽度计算
-  $p.Width = 1200
-
-  $top = New-Object System.Windows.Forms.Panel
-  $top.Dock = 'Top'; $top.Height = 44; $top.BackColor = [System.Drawing.Color]::White
-
-  $lblDupDir = New-Object System.Windows.Forms.Label
-  $lblDupDir.Text = '目录:'; $lblDupDir.Location = New-Object System.Drawing.Point(12, 14); $lblDupDir.AutoSize = $true
-  $top.Controls.Add($lblDupDir)
-  $script:TxtDupDir = New-Object System.Windows.Forms.TextBox
-  $script:TxtDupDir.Text = $env:USERPROFILE
-  $script:TxtDupDir.Location = New-Object System.Drawing.Point(50, 11); $script:TxtDupDir.Width = 330
-  $top.Controls.Add($script:TxtDupDir)
-  $btnDupBrowse = New-ModernButton
-  $btnDupBrowse.Text = '浏览'
-  $btnDupBrowse.Location = New-Object System.Drawing.Point(386, 9); $btnDupBrowse.Size = New-Object System.Drawing.Size(60, 26)
-  $top.Controls.Add($btnDupBrowse)
-  $script:BtnDupScan = New-ModernButton
-  $script:BtnDupScan.Text = '开始检测'
-  $script:BtnDupScan.BackColor = [System.Drawing.ColorTranslator]::FromHtml($script:Theme.Primary)
-  $script:BtnDupScan.ForeColor = [System.Drawing.Color]::White; $script:BtnDupScan.FlatStyle = 'Flat'
-  $script:BtnDupScan.Location = New-Object System.Drawing.Point(452, 8); $script:BtnDupScan.Size = New-Object System.Drawing.Size(90, 28)
-  $top.Controls.Add($script:BtnDupScan)
-  $script:BtnDupStop = New-ModernButton
-  $script:BtnDupStop.Text = '停止'
-  $script:BtnDupStop.Location = New-Object System.Drawing.Point(548, 8); $script:BtnDupStop.Size = New-Object System.Drawing.Size(60, 28); $script:BtnDupStop.Enabled = $false
-  $top.Controls.Add($script:BtnDupStop)
-  $script:ProgD = New-ModernProgressBar
-  $script:ProgD.Location = New-Object System.Drawing.Point(618, 13); $script:ProgD.Size = New-Object System.Drawing.Size(200, 16)
-  $top.Controls.Add($script:ProgD)
-  $script:LblD = New-Object System.Windows.Forms.Label
-  $script:LblD.Text = '就绪'; $script:LblD.Location = New-Object System.Drawing.Point(826, 14); $script:LblD.AutoSize = $true
-  $top.Controls.Add($script:LblD)
-
-  $script:LvDup = New-Object System.Windows.Forms.ListView
-  $script:LvDup.Dock = 'Fill'
-  $script:LvDup.View = 'Details'; $script:LvDup.FullRowSelect = $true; $script:LvDup.GridLines = $false; $script:LvDup.HideSelection = $false
-  $script:LvDup.CheckBoxes = $true
-  $script:LvDup.UseCompatibleStateImageBehavior = $false
-  $null = $script:LvDup.Columns.Add('组', 50)
-  $null = $script:LvDup.Columns.Add('大小', 90)
-  $null = $script:LvDup.Columns.Add('状态', 70)
-  $null = $script:LvDup.Columns.Add('路径', 660)
-  Register-ColumnSort -Lv $script:LvDup -NumericCols @(0, 1)
-
-  $foot = New-Object System.Windows.Forms.Panel
-  $foot.Dock = 'Bottom'; $foot.Height = 48; $foot.BackColor = [System.Drawing.Color]::White
-  # 先按设计宽度设置（与主窗 1200 一致）：右锚定删除按钮首次布局时按真实右缘计算
-  $foot.Width = 1200
-  $script:LblDupInfo = New-Object System.Windows.Forms.Label
-  $script:LblDupInfo.Text = '默认每组保留 1 个副本，其余已勾选待删除。'
-  $script:LblDupInfo.ForeColor = [System.Drawing.ColorTranslator]::FromHtml($script:Theme.Text)
-  $script:LblDupInfo.Location = New-Object System.Drawing.Point(12, 15); $script:LblDupInfo.AutoSize = $true
-  $foot.Controls.Add($script:LblDupInfo)
-  $script:BtnDupDel = New-ModernButton
-  $script:BtnDupDel.Text = '删除勾选(回收站)'
-  $script:BtnDupDel.BackColor = [System.Drawing.ColorTranslator]::FromHtml($script:Theme.Red)
-  $script:BtnDupDel.ForeColor = [System.Drawing.Color]::White; $script:BtnDupDel.FlatStyle = 'Flat'
-  $script:BtnDupDel.Location = New-Object System.Drawing.Point(1030, 9); $script:BtnDupDel.Size = New-Object System.Drawing.Size(140, 30)
-  $script:BtnDupDel.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Right
-  $foot.Controls.Add($script:BtnDupDel)
-
-  $p.Controls.Add($foot)
-  $p.Controls.Add($top)
-  $p.Controls.Add($script:LvDup)
-
-  $script:DupWorker = New-Object System.ComponentModel.BackgroundWorker
-  $script:DupWorker.WorkerSupportsCancellation = $true
-  $script:DupWorker.WorkerReportsProgress = $true
-  $dupDoWork = {
-    param($s, $e)
-    $groups = Get-DupeGroups -Root ([string]$e.Argument) -W $s
-    if ($s.CancellationPending) { $e.Cancel = $true; return }
-    $e.Result = $groups
-  }
-  Register-WorkerBody -Worker $script:DupWorker -Name 'Dup' -ScriptBlock $dupDoWork
-  $script:DupWorker.add_ProgressChanged({
-    param($s, $e)
-    $script:ProgD.Value = [Math]::Min(100, $e.ProgressPercentage)
-    $script:LblD.Text = [string]$e.UserState
-  })
-  $script:DupWorker.add_RunWorkerCompleted({
-    param($s, $e)
-    $script:BtnDupScan.Enabled = $true; $script:BtnDupStop.Enabled = $false
-    $script:ProgD.Style = 'Continuous'; $script:ProgD.Value = 0
-    if ($e.Cancelled) { $script:LblD.Text = '已取消'; return }
-    $rows = @($e.Result)
-    $script:LvDup.BeginUpdate(); $script:LvDup.Items.Clear()
-    foreach ($r in $rows) {
-      $keepTxt = if ($r.Keep) { '保留' } else { '待删' }
-      $li = [System.Windows.Forms.ListViewItem]::new([string[]]@([string]$r.Group, (Format-Bytes $r.Size), $keepTxt, $r.Path))
-      $li.Tag = $r
-      $li.Checked = -not $r.Keep
-      $li.ForeColor = if ($r.Keep) { [System.Drawing.ColorTranslator]::FromHtml($script:Theme.Green) } else { [System.Drawing.ColorTranslator]::FromHtml($script:Theme.Text) }
-      $li.BackColor = if ($r.Keep) { [System.Drawing.ColorTranslator]::FromHtml('#E8F5E9') } else { [System.Drawing.ColorTranslator]::FromHtml('#FFF8E1') }
-      $null = $script:LvDup.Items.Add($li)
-    }
-    $script:LvDup.EndUpdate()
-    $grp = @($rows | ForEach-Object { $_.Group } | Sort-Object -Unique).Count
-    $script:LblDupInfo.Text = ('发现 {0} 组重复文件，共 {1} 个副本（每组保留 1 个）' -f $grp, $rows.Count)
-    $script:LblD.Text = '完成'
-    Log-Line ('重复文件检测完成: {0} 组 / {1} 文件' -f $grp, $rows.Count)
-  })
-
-  $btnDupBrowse.add_Click({
-    $d = New-Object System.Windows.Forms.FolderBrowserDialog
-    $d.Description = '选择要检测重复文件的目录'
-    $d.SelectedPath = $script:TxtDupDir.Text
-    if ($d.ShowDialog() -eq 'OK') { $script:TxtDupDir.Text = $d.SelectedPath }
-  })
-  $script:BtnDupScan.add_Click({
-    $root = $script:TxtDupDir.Text.Trim()
-    if (-not $root -or -not (Test-Path -LiteralPath $root -PathType Container)) {
-      try { [System.Windows.Forms.MessageBox]::Show('请输入存在的目录。', '提示', 'OK', 'Information') } catch { }
-      return
-    }
-    $script:BtnDupScan.Enabled = $false; $script:BtnDupStop.Enabled = $true
-    $script:ProgD.Style = 'Marquee'; $script:ProgD.MarqueeAnimationSpeed = 30
-    $script:LblD.Text = '检测中...'
-    $script:LvDup.Items.Clear()
-    Log-Line ('重复文件检测开始: ' + $root)
-    $script:DupWorker.RunWorkerAsync($root)
-  })
-  $script:BtnDupStop.add_Click({ $script:DupWorker.CancelAsync() })
-  $script:BtnDupDel.add_Click({
-    $sel = @($script:LvDup.CheckedItems | ForEach-Object { $_.Tag })
-    if ($sel.Count -eq 0) {
-      try { [System.Windows.Forms.MessageBox]::Show('没有勾选要删除的文件。', '提示', 'OK', 'Information') } catch { }
-      return
-    }
-    $r = [System.Windows.Forms.MessageBox]::Show(('确定将 {0} 个重复文件删除到回收站？（每组至少保留 1 个副本，请勿取消"保留"项）' -f $sel.Count), '确认删除', 'YesNo', 'Warning')
-    if ($r -ne 'Yes') { return }
-    $rel = 0L; $ok = 0; $doneRows = @()
-    foreach ($li in @($script:LvDup.CheckedItems)) {
-      $it = $li.Tag
-      # 以"删除前存在且删除后不存在"判定成功；失败的行保留在列表中，文件也在
-      $existed = Test-Path -LiteralPath $it.Path
-      $b = Remove-UserPathToRecycle $it.Path
-      if ($existed -and -not (Test-Path -LiteralPath $it.Path)) { $ok++; $rel += $b; $doneRows += $li }
-    }
-    Log-Line ('重复文件删除: 成功 {0}/{1}, 释放 {2}' -f $ok, $sel.Count, (Format-Bytes $rel))
-    foreach ($li in $doneRows) { $script:LvDup.Items.Remove($li) }
-    try {
-      [System.Windows.Forms.MessageBox]::Show(('已删除 {0} 个重复文件，释放 {1}；占用/受保护自动跳过。' -f $ok, (Format-Bytes $rel)), '完成', 'OK', 'Information')
-    } catch { }
-  })
-
-  return $p
-}
+function New-DupeFilesPage { return (New-WpfPlaceholder -Title '重复文件' -Msg '按哈希查找重复文件（WPF 重构中）') }
 
 # ---------- Tab: 还原点管理 ----------
 function Get-RestorePoints {
@@ -2309,90 +1390,7 @@ function Remove-OldRestorePoints {
   return $del
 }
 
-function New-RestorePage {
-  $p = New-Object System.Windows.Forms.TabPage
-  $p.Text = '还原点'
-  $p.BackColor = [System.Drawing.ColorTranslator]::FromHtml($script:Theme.Bg)
-
-  $script:RPBanner = New-Object System.Windows.Forms.Panel
-  $script:RPBanner.Dock = 'Top'; $script:RPBanner.Height = 40; $script:RPBanner.BackColor = [System.Drawing.ColorTranslator]::FromHtml($script:Theme.Yellow)
-  $script:LblRPStatus = New-Object System.Windows.Forms.Label
-  $script:LblRPStatus.Text = '检测中...'
-  $script:LblRPStatus.Font = New-Object System.Drawing.Font($script:Theme.FontUi,10, [System.Drawing.FontStyle]::Bold)
-  $script:LblRPStatus.ForeColor = [System.Drawing.ColorTranslator]::FromHtml($script:Theme.Text)
-  $script:LblRPStatus.Location = New-Object System.Drawing.Point(12, 10); $script:LblRPStatus.AutoSize = $true
-  $script:RPBanner.Controls.Add($script:LblRPStatus)
-
-  $top = New-Object System.Windows.Forms.Panel
-  $top.Dock = 'Top'; $top.Height = 44; $top.BackColor = [System.Drawing.Color]::White
-  $btnRPRefresh = New-ModernButton
-  $btnRPRefresh.Text = '刷新'
-  $btnRPRefresh.BackColor = [System.Drawing.ColorTranslator]::FromHtml($script:Theme.Primary)
-  $btnRPRefresh.ForeColor = [System.Drawing.Color]::White; $btnRPRefresh.FlatStyle = 'Flat'
-  $btnRPRefresh.Location = New-Object System.Drawing.Point(12, 8); $btnRPRefresh.Size = New-Object System.Drawing.Size(70, 28)
-  $top.Controls.Add($btnRPRefresh)
-  $script:BtnRPDelete = New-ModernButton
-  $script:BtnRPDelete.Text = '删除旧还原点(保留最近3个)'
-  $script:BtnRPDelete.BackColor = [System.Drawing.ColorTranslator]::FromHtml($script:Theme.Red)
-  $script:BtnRPDelete.ForeColor = [System.Drawing.Color]::White; $script:BtnRPDelete.FlatStyle = 'Flat'
-  $script:BtnRPDelete.Location = New-Object System.Drawing.Point(88, 8); $script:BtnRPDelete.Size = New-Object System.Drawing.Size(190, 28)
-  $top.Controls.Add($script:BtnRPDelete)
-
-  $script:LvRP = New-Object System.Windows.Forms.ListView
-  $script:LvRP.Dock = 'Fill'
-  $script:LvRP.View = 'Details'; $script:LvRP.FullRowSelect = $true; $script:LvRP.GridLines = $false; $script:LvRP.HideSelection = $false
-  $script:LvRP.UseCompatibleStateImageBehavior = $false
-  $null = $script:LvRP.Columns.Add('序号', 70)
-  $null = $script:LvRP.Columns.Add('创建时间', 150)
-  $null = $script:LvRP.Columns.Add('描述', 400)
-  Register-ColumnSort -Lv $script:LvRP -NumericCols @(0)
-
-  $p.Controls.Add($top)
-  $p.Controls.Add($script:RPBanner)
-  $p.Controls.Add($script:LvRP)
-
-  function script:Fill-RestoreList {
-    $script:LvRP.BeginUpdate(); $script:LvRP.Items.Clear()
-    $pts = Get-RestorePoints
-    if ($pts.Count -eq 0) {
-      $script:LblRPStatus.Text = '系统还原不可用或无还原点（本机服务未启用）'
-      $script:RPBanner.BackColor = [System.Drawing.ColorTranslator]::FromHtml($script:Theme.Yellow)
-      $script:BtnRPDelete.Enabled = $false
-    } else {
-      foreach ($rp in ($pts | Sort-Object CreationTime -Descending)) {
-        # CreationTime 可能是 WMI 字符串日期（如 20260924...+480），须先转 DateTime
-        try {
-          $dt = [System.Management.ManagementDateTimeConverter]::ToDateTime([string]$rp.CreationTime)
-        } catch {
-          try { $dt = [datetime]$rp.CreationTime } catch { $dt = $null }
-        }
-        $ctStr = if ($dt) { $dt.ToString('yyyy-MM-dd HH:mm') } else { [string]$rp.CreationTime }
-        $li = [System.Windows.Forms.ListViewItem]::new([string[]]@([string]$rp.SequenceNumber, $ctStr, [string]$rp.Description))
-        $li.Tag = $rp
-        $null = $script:LvRP.Items.Add($li)
-      }
-      $script:LblRPStatus.Text = ('系统还原可用：共 {0} 个还原点' -f $pts.Count)
-      $script:RPBanner.BackColor = [System.Drawing.ColorTranslator]::FromHtml($script:Theme.Green)
-      $script:BtnRPDelete.Enabled = $pts.Count -gt 3
-    }
-    $script:LvRP.EndUpdate()
-  }
-
-  $btnRPRefresh.add_Click({ Fill-RestoreList })
-  $script:BtnRPDelete.add_Click({
-    $r1 = [System.Windows.Forms.MessageBox]::Show('删除旧还原点后无法恢复被删除的系统快照！确定继续？', '危险操作', 'YesNo', 'Warning')
-    if ($r1 -ne 'Yes') { return }
-    $r2 = [System.Windows.Forms.MessageBox]::Show('再次确认：将删除除最近 3 个外的全部还原点？', '最终确认', 'YesNo', 'Warning')
-    if ($r2 -ne 'Yes') { return }
-    $del = Remove-OldRestorePoints
-    Log-Line ('还原点清理: 删除 {0} 个' -f $del)
-    Fill-RestoreList
-    try { [System.Windows.Forms.MessageBox]::Show(('已删除 {0} 个旧还原点。' -f $del), '完成', 'OK', 'Information') } catch { }
-  })
-
-  Fill-RestoreList
-  return $p
-}
+function New-RestorePage { return (New-WpfPlaceholder -Title '还原点' -Msg '系统还原点管理（WPF 重构中）') }
 
 # ---------- Tab: 启动项管理 ----------
 function Get-StartupItems {
@@ -2444,487 +1442,448 @@ function Backup-StartupReg {
   return $files
 }
 
-function New-StartupPage {
-  $p = New-Object System.Windows.Forms.TabPage
-  $p.Text = '启动项'
-  $p.BackColor = [System.Drawing.ColorTranslator]::FromHtml($script:Theme.Bg)
-
-  $top = New-Object System.Windows.Forms.Panel
-  $top.Dock = 'Top'; $top.Height = 44; $top.BackColor = [System.Drawing.Color]::White
-
-  $btnStRefresh = New-ModernButton
-  $btnStRefresh.Text = '刷新'
-  $btnStRefresh.BackColor = [System.Drawing.ColorTranslator]::FromHtml($script:Theme.Primary)
-  $btnStRefresh.ForeColor = [System.Drawing.Color]::White; $btnStRefresh.FlatStyle = 'Flat'
-  $btnStRefresh.Location = New-Object System.Drawing.Point(12, 8); $btnStRefresh.Size = New-Object System.Drawing.Size(70, 28)
-  $top.Controls.Add($btnStRefresh)
-  $btnStOpen = New-ModernButton
-  $btnStOpen.Text = '打开启动文件夹'
-  $btnStOpen.Location = New-Object System.Drawing.Point(88, 8); $btnStOpen.Size = New-Object System.Drawing.Size(120, 28)
-  $top.Controls.Add($btnStOpen)
-  $btnStBackup = New-ModernButton
-  $btnStBackup.Text = '备份注册表项(.reg)'
-  $btnStBackup.Location = New-Object System.Drawing.Point(214, 8); $btnStBackup.Size = New-Object System.Drawing.Size(140, 28)
-  $top.Controls.Add($btnStBackup)
-  $script:LblSt = New-Object System.Windows.Forms.Label
-  $script:LblSt.Text = '信息展示为主；修改请用系统"任务管理器>启动"或 msconfig。'
-  $script:LblSt.ForeColor = [System.Drawing.ColorTranslator]::FromHtml($script:Theme.Disabled)
-  $script:LblSt.Location = New-Object System.Drawing.Point(364, 14); $script:LblSt.AutoSize = $true
-  $top.Controls.Add($script:LblSt)
-
-  $script:LvStart = New-Object System.Windows.Forms.ListView
-  $script:LvStart.Dock = 'Fill'
-  $script:LvStart.View = 'Details'; $script:LvStart.FullRowSelect = $true; $script:LvStart.GridLines = $false; $script:LvStart.HideSelection = $false
-  $script:LvStart.UseCompatibleStateImageBehavior = $false
-  $null = $script:LvStart.Columns.Add('来源', 130)
-  $null = $script:LvStart.Columns.Add('名称', 200)
-  $null = $script:LvStart.Columns.Add('状态', 60)
-  $null = $script:LvStart.Columns.Add('命令', 560)
-  Register-ColumnSort -Lv $script:LvStart
-
-  $menuSt = New-Object System.Windows.Forms.ContextMenuStrip
-  $miStCopy = New-Object System.Windows.Forms.ToolStripMenuItem('复制命令')
-  $null = $menuSt.Items.Add($miStCopy)
-  $script:LvStart.ContextMenuStrip = $menuSt
-
-  $p.Controls.Add($top)
-  $p.Controls.Add($script:LvStart)
-
-  function script:Fill-StartupList {
-    $script:LvStart.BeginUpdate(); $script:LvStart.Items.Clear()
-    foreach ($s in (Get-StartupItems)) {
-      $li = [System.Windows.Forms.ListViewItem]::new([string[]]@($s.Source, $s.Name, $s.Status, $s.Command))
-      $li.Tag = $s
-      $null = $script:LvStart.Items.Add($li)
-    }
-    $script:LvStart.EndUpdate()
-    $script:LblSt.Text = ('共 {0} 个启动项' -f $script:LvStart.Items.Count)
-  }
-
-  $btnStRefresh.add_Click({ Fill-StartupList })
-  $btnStOpen.add_Click({
-    try { Start-Process explorer.exe -ArgumentList ($env:APPDATA + '\Microsoft\Windows\Start Menu\Programs\Startup') } catch { }
-  })
-  $btnStBackup.add_Click({
-    $files = Backup-StartupReg
-    if ($files.Count -gt 0) {
-      Log-Line ('启动项备份: ' + ($files -join '; '))
-      try { [System.Windows.Forms.MessageBox]::Show(('已备份到: ' + ($files -join "`r`n")), '备份完成', 'OK', 'Information') } catch { }
-    } else {
-      try { [System.Windows.Forms.MessageBox]::Show('备份失败（注册表导出未生成文件）。', '提示', 'OK', 'Warning') } catch { }
-    }
-  })
-  $miStCopy.add_Click({
-    if ($script:LvStart.SelectedItems.Count -gt 0) { try { [System.Windows.Forms.Clipboard]::SetText([string]$script:LvStart.SelectedItems[0].Tag.Command) } catch { } }
-  })
-
-  Fill-StartupList
-  return $p
-}
+function New-StartupPage { return (New-WpfPlaceholder -Title '启动项' -Msg '启动项管理（WPF 重构中）') }
 #endregion
 
 #region 主窗口（橙色主题完整界面）
-function New-MainWindow {
-  $f = New-Object System.Windows.Forms.Form
-  $f.Text = 'DiskCleanerPro - C 盘智能清理工具'
-  $f.ClientSize = New-Object System.Drawing.Size(1200, 800)
-  $f.MinimumSize = New-Object System.Drawing.Size(960, 640)
-  $f.BackColor = [System.Drawing.ColorTranslator]::FromHtml($script:Theme.Bg)
-  $f.StartPosition = 'CenterScreen'
-  $f.Font = New-Object System.Drawing.Font($script:Theme.FontUi, 9)
-  # 程序图标：代码绘制橙色圆角方块 + 白色对勾（无图片资源文件）
-  $iconBmp = New-Object System.Drawing.Bitmap(32, 32)
-  $ig = [System.Drawing.Graphics]::FromImage($iconBmp)
-  $ig.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
-  $ig.Clear([System.Drawing.Color]::Transparent)
-  $ip = New-Object System.Drawing.Drawing2D.GraphicsPath
-  $ip.AddArc(2, 2, 12, 12, 180, 90); $ip.AddArc(18, 2, 12, 12, 270, 90)
-  $ip.AddArc(18, 18, 12, 12, 0, 90); $ip.AddArc(2, 18, 12, 12, 90, 90)
-  $ip.CloseFigure()
-  $ib = New-Object System.Drawing.SolidBrush([System.Drawing.ColorTranslator]::FromHtml($script:Theme.Primary))
-  $ig.FillPath($ib, $ip)
-  $ipen = New-Object System.Drawing.Pen([System.Drawing.Color]::White, 3)
-  $ipen.StartCap = [System.Drawing.Drawing2D.LineCap]::Round
-  $ipen.EndCap = [System.Drawing.Drawing2D.LineCap]::Round
-  $ig.DrawLine($ipen, 9, 17, 14, 22); $ig.DrawLine($ipen, 14, 22, 24, 9)
-  $f.Icon = [System.Drawing.Icon]::FromHandle($iconBmp.GetHicon())
-  $ipen.Dispose(); $ib.Dispose(); $ip.Dispose(); $ig.Dispose(); $iconBmp.Dispose()
+$script:WpfShellXaml = @'
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="DiskCleanerPro - C 盘智能清理工具"
+        Width="1200" Height="800" MinWidth="960" MinHeight="640"
+        WindowStartupLocation="CenterScreen"
+        Background="#F5F6F8" FontFamily="Microsoft YaHei UI" FontSize="13"
+        UseLayoutRounding="True" TextOptions.TextFormattingMode="Display">
+  <Window.Resources>
+    <SolidColorBrush x:Key="Text" Color="#1F2937"/>
+    <SolidColorBrush x:Key="SubText" Color="#6B7280"/>
+    <SolidColorBrush x:Key="CardLine" Color="#E5E7EB"/>
+    <SolidColorBrush x:Key="CardBg" Color="#FFFFFF"/>
+    <SolidColorBrush x:Key="PageBg" Color="#F5F6F8"/>
+    <SolidColorBrush x:Key="Primary" Color="#F97316"/>
+    <SolidColorBrush x:Key="PrimaryHover" Color="#EA580C"/>
+    <SolidColorBrush x:Key="PrimaryPress" Color="#C2410C"/>
+    <SolidColorBrush x:Key="NavBg" Color="#EEF1F4"/>
+    <SolidColorBrush x:Key="NavHover" Color="#E4E8ED"/>
+    <SolidColorBrush x:Key="Green" Color="#16A34A"/>
+    <SolidColorBrush x:Key="GreenHover" Color="#15803D"/>
+    <SolidColorBrush x:Key="Red" Color="#DC2626"/>
+    <SolidColorBrush x:Key="Yellow" Color="#D97706"/>
+    <SolidColorBrush x:Key="LightBtn" Color="#EEF1F4"/>
+    <SolidColorBrush x:Key="LightBtnHover" Color="#E4E8ED"/>
+    <SolidColorBrush x:Key="LightBtnPress" Color="#DAE0E6"/>
 
-  # ============ 顶部栏（Fluent 风：白色纤薄头部，橙色只留在进度与主按钮上） ============
-  $banner = New-Object System.Windows.Forms.Panel
-  $banner.Dock = 'Top'
-  $banner.Height = 64
-  # 先按设计宽度设置：右锚定子控件首次布局时才能按真实右缘计算（否则按默认 200 宽算出负留白→被推到屏外）
-  $banner.Width = $f.ClientSize.Width
-  $banner.BackColor = [System.Drawing.ColorTranslator]::FromHtml($script:Theme.Banner)
-  # 底部发丝分隔线
-  $banner.add_Paint({
+    <!-- 浅色按钮 -->
+    <Style x:Key="BtnLight" TargetType="Button">
+      <Setter Property="Foreground" Value="{StaticResource Text}"/>
+      <Setter Property="Background" Value="{StaticResource LightBtn}"/>
+      <Setter Property="BorderThickness" Value="0"/>
+      <Setter Property="Cursor" Value="Hand"/>
+      <Setter Property="Focusable" Value="False"/>
+      <Setter Property="FontSize" Value="12"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="Button">
+            <Border x:Name="Bd" CornerRadius="6" Background="{TemplateBinding Background}" Padding="{TemplateBinding Padding}">
+              <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+            </Border>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsMouseOver" Value="True">
+                <Setter TargetName="Bd" Property="Background" Value="{StaticResource LightBtnHover}"/>
+              </Trigger>
+              <Trigger Property="IsPressed" Value="True">
+                <Setter TargetName="Bd" Property="Background" Value="{StaticResource LightBtnPress}"/>
+              </Trigger>
+              <Trigger Property="IsEnabled" Value="False">
+                <Setter Property="Opacity" Value="0.45"/>
+              </Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+
+    <!-- 主按钮（橙） -->
+    <Style x:Key="BtnPrimary" TargetType="Button">
+      <Setter Property="Foreground" Value="White"/>
+      <Setter Property="Background" Value="{StaticResource Primary}"/>
+      <Setter Property="BorderThickness" Value="0"/>
+      <Setter Property="Cursor" Value="Hand"/>
+      <Setter Property="Focusable" Value="False"/>
+      <Setter Property="FontSize" Value="14"/>
+      <Setter Property="FontWeight" Value="Bold"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="Button">
+            <Border x:Name="Bd" CornerRadius="8" Background="{TemplateBinding Background}" Padding="{TemplateBinding Padding}">
+              <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+            </Border>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsMouseOver" Value="True">
+                <Setter TargetName="Bd" Property="Background" Value="{StaticResource PrimaryHover}"/>
+              </Trigger>
+              <Trigger Property="IsPressed" Value="True">
+                <Setter TargetName="Bd" Property="Background" Value="{StaticResource PrimaryPress}"/>
+              </Trigger>
+              <Trigger Property="IsEnabled" Value="False">
+                <Setter Property="Opacity" Value="0.45"/>
+              </Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+
+    <!-- 绿色按钮 -->
+    <Style x:Key="BtnGreen" TargetType="Button">
+      <Setter Property="Foreground" Value="White"/>
+      <Setter Property="Background" Value="{StaticResource Green}"/>
+      <Setter Property="BorderThickness" Value="0"/>
+      <Setter Property="Cursor" Value="Hand"/>
+      <Setter Property="Focusable" Value="False"/>
+      <Setter Property="FontSize" Value="12"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="Button">
+            <Border x:Name="Bd" CornerRadius="6" Background="{TemplateBinding Background}" Padding="{TemplateBinding Padding}">
+              <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+            </Border>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsMouseOver" Value="True">
+                <Setter TargetName="Bd" Property="Background" Value="{StaticResource GreenHover}"/>
+              </Trigger>
+              <Trigger Property="IsPressed" Value="True">
+                <Setter TargetName="Bd" Property="Background" Value="#14532D"/>
+              </Trigger>
+              <Trigger Property="IsEnabled" Value="False">
+                <Setter Property="Opacity" Value="0.45"/>
+              </Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+
+    <!-- 细进度条 -->
+    <Style x:Key="BarThin" TargetType="ProgressBar">
+      <Setter Property="Height" Value="6"/>
+      <Setter Property="Foreground" Value="{StaticResource Primary}"/>
+      <Setter Property="Background" Value="{StaticResource CardLine}"/>
+      <Setter Property="BorderThickness" Value="0"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="ProgressBar">
+            <Border x:Name="PART_Track" CornerRadius="3" Background="{TemplateBinding Background}">
+              <Border x:Name="PART_Indicator" CornerRadius="3" Background="{TemplateBinding Foreground}"
+                      HorizontalAlignment="Left"/>
+            </Border>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+
+    <!-- 左侧导航项：GPU 合成 + 120ms 过渡，杜绝 WinForms 式整条重绘闪烁 -->
+    <Style x:Key="NavItemStyle" TargetType="ListBoxItem">
+      <Setter Property="Cursor" Value="Hand"/>
+      <Setter Property="Foreground" Value="#5B6470"/>
+      <Setter Property="FontSize" Value="13"/>
+      <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="ListBoxItem">
+            <Border CornerRadius="6" Margin="0,1">
+              <Grid>
+                <Border x:Name="HoverBg" CornerRadius="6" Background="Transparent"/>
+                <Border x:Name="SelBg" CornerRadius="6" Background="White" Opacity="0"/>
+                <Grid>
+                  <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="3"/>
+                    <ColumnDefinition Width="*"/>
+                  </Grid.ColumnDefinitions>
+                  <Border x:Name="SelBar" Background="#F97316" CornerRadius="1.5" Margin="0,5,0,5" Opacity="0"/>
+                  <ContentPresenter Grid.Column="1" Margin="12,9,8,9" VerticalAlignment="Center"/>
+                </Grid>
+              </Grid>
+            </Border>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsMouseOver" Value="True">
+                <Trigger.EnterActions>
+                  <BeginStoryboard>
+                    <Storyboard>
+                      <ColorAnimation Storyboard.TargetName="HoverBg" Storyboard.TargetProperty="(Border.Background).(SolidColorBrush.Color)" To="#E4E8ED" Duration="0:0:0.12"/>
+                    </Storyboard>
+                  </BeginStoryboard>
+                </Trigger.EnterActions>
+                <Trigger.ExitActions>
+                  <BeginStoryboard>
+                    <Storyboard>
+                      <ColorAnimation Storyboard.TargetName="HoverBg" Storyboard.TargetProperty="(Border.Background).(SolidColorBrush.Color)" To="Transparent" Duration="0:0:0.12"/>
+                    </Storyboard>
+                  </BeginStoryboard>
+                </Trigger.ExitActions>
+              </Trigger>
+              <Trigger Property="IsSelected" Value="True">
+                <Setter Property="FontWeight" Value="Bold"/>
+                <Setter Property="Foreground" Value="#1F2937"/>
+                <Trigger.EnterActions>
+                  <BeginStoryboard>
+                    <Storyboard>
+                      <DoubleAnimation Storyboard.TargetName="SelBg" Storyboard.TargetProperty="Opacity" To="1" Duration="0:0:0.12"/>
+                      <DoubleAnimation Storyboard.TargetName="SelBar" Storyboard.TargetProperty="Opacity" To="1" Duration="0:0:0.12"/>
+                    </Storyboard>
+                  </BeginStoryboard>
+                </Trigger.EnterActions>
+                <Trigger.ExitActions>
+                  <BeginStoryboard>
+                    <Storyboard>
+                      <DoubleAnimation Storyboard.TargetName="SelBg" Storyboard.TargetProperty="Opacity" To="0" Duration="0:0:0.12"/>
+                      <DoubleAnimation Storyboard.TargetName="SelBar" Storyboard.TargetProperty="Opacity" To="0" Duration="0:0:0.12"/>
+                    </Storyboard>
+                  </BeginStoryboard>
+                </Trigger.ExitActions>
+              </Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+  </Window.Resources>
+
+  <Grid>
+    <Grid.RowDefinitions>
+      <RowDefinition Height="58"/>
+      <RowDefinition Height="*"/>
+      <RowDefinition Height="Auto"/>
+      <RowDefinition Height="Auto"/>
+    </Grid.RowDefinitions>
+
+    <!-- ============ 顶部栏 ============ -->
+    <Border Grid.Row="0" Background="{StaticResource CardBg}" BorderBrush="{StaticResource CardLine}" BorderThickness="0,0,0,1">
+      <Grid Margin="16,0">
+        <Grid.ColumnDefinitions>
+          <ColumnDefinition Width="Auto"/>
+          <ColumnDefinition Width="*"/>
+          <ColumnDefinition Width="Auto"/>
+          <ColumnDefinition Width="Auto"/>
+        </Grid.ColumnDefinitions>
+        <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+          <StackPanel>
+            <TextBlock Text="DiskCleanerPro" FontSize="15" FontWeight="Bold" Foreground="{StaticResource Text}"/>
+            <TextBlock Text="C 盘智能清理工具" FontSize="10" Foreground="{StaticResource SubText}" Margin="0,2,0,0"/>
+          </StackPanel>
+          <Border x:Name="AdminBadge" CornerRadius="4" Background="#ECFDF5" Margin="12,0,0,0" Padding="8,4" VerticalAlignment="Center">
+            <TextBlock x:Name="AdminBadgeText" Text="管理员" FontSize="11" FontWeight="Bold" Foreground="#047857"/>
+          </Border>
+        </StackPanel>
+        <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
+          <Button x:Name="BtnScan" Style="{StaticResource BtnLight}" Content="立即重新扫描" Height="32" Padding="16,0" Margin="0,0,8,0"/>
+          <Button x:Name="BtnClearCache" Style="{StaticResource BtnLight}" Content="清空扫描缓存" Height="32" Padding="16,0" Margin="0,0,8,0"/>
+          <Button x:Name="BtnCancelScan" Style="{StaticResource BtnLight}" Content="取消扫描" Height="32" Padding="14,0" IsEnabled="False"/>
+        </StackPanel>
+        <StackPanel Grid.Column="3" Width="260" VerticalAlignment="Center" Margin="16,0,0,0">
+          <TextBlock x:Name="DiskInfo" Text="磁盘信息加载中..." FontSize="12" Foreground="{StaticResource Text}" TextAlignment="Right"/>
+          <ProgressBar x:Name="DiskBar" Style="{StaticResource BarThin}" Height="5" Margin="0,5,0,0" Maximum="100"/>
+        </StackPanel>
+      </Grid>
+    </Border>
+
+    <!-- ============ 主体：左侧导航 + 页面 ============ -->
+    <Grid Grid.Row="1">
+      <Grid.ColumnDefinitions>
+        <ColumnDefinition Width="200"/>
+        <ColumnDefinition Width="*"/>
+      </Grid.ColumnDefinitions>
+      <Border Background="{StaticResource NavBg}" BorderBrush="{StaticResource CardLine}" BorderThickness="0,0,1,0">
+        <ListBox x:Name="NavList" Background="Transparent" BorderThickness="0" Foreground="#5B6470"
+                 SelectedIndex="0" Margin="8,8,8,8" ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                 ItemContainerStyle="{StaticResource NavItemStyle}" FocusVisualStyle="{x:Null}">
+          <ListBoxItem>缓存清理</ListBoxItem>
+          <ListBoxItem>空间分析</ListBoxItem>
+          <ListBoxItem>空文件夹</ListBoxItem>
+          <ListBoxItem>系统加速</ListBoxItem>
+          <ListBoxItem>大文件</ListBoxItem>
+          <ListBoxItem>软件占用</ListBoxItem>
+          <ListBoxItem>重复文件</ListBoxItem>
+          <ListBoxItem>还原点</ListBoxItem>
+          <ListBoxItem>启动项</ListBoxItem>
+        </ListBox>
+      </Border>
+      <Grid Grid.Column="1" x:Name="PageHost" Background="{StaticResource PageBg}"/>
+    </Grid>
+
+    <!-- ============ 底部操作条 ============ -->
+    <Border Grid.Row="2" Background="{StaticResource CardBg}" BorderBrush="{StaticResource CardLine}" BorderThickness="0,1,0,0">
+      <Grid Margin="16,12,16,12">
+        <Grid.RowDefinitions>
+          <RowDefinition Height="Auto"/>
+          <RowDefinition Height="Auto"/>
+          <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+        <Grid>
+          <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="*"/>
+            <ColumnDefinition Width="Auto"/>
+          </Grid.ColumnDefinitions>
+          <TextBlock x:Name="TotalLabel" Text="合计可释放: 0 B" FontSize="15" FontWeight="Bold" Foreground="{StaticResource Primary}" VerticalAlignment="Center"/>
+          <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+            <Button x:Name="BtnCancelClean" Style="{StaticResource BtnLight}" Content="取消" Width="70" Height="50" IsEnabled="False" Margin="0,0,8,0"/>
+            <Button x:Name="BtnClean" Style="{StaticResource BtnPrimary}" Content="开始清理" Width="150" Height="50" FontSize="15"/>
+          </StackPanel>
+        </Grid>
+        <Grid Grid.Row="1" Margin="0,10,0,0">
+          <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="*"/>
+            <ColumnDefinition Width="Auto"/>
+          </Grid.ColumnDefinitions>
+          <StackPanel Orientation="Horizontal">
+            <Button x:Name="BtnAll" Style="{StaticResource BtnLight}" Content="全选" Width="76" Height="30" Margin="0,0,8,0"/>
+            <Button x:Name="BtnNone" Style="{StaticResource BtnLight}" Content="全不选" Width="76" Height="30" Margin="0,0,8,0"/>
+            <Button x:Name="BtnLow" Style="{StaticResource BtnLight}" Content="仅低风险" Width="92" Height="30" Margin="0,0,8,0"/>
+            <Button x:Name="BtnSafe" Style="{StaticResource BtnGreen}" Content="一键清理安全项" Width="130" Height="30"/>
+          </StackPanel>
+          <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+            <TextBlock Text="删除方式:" Foreground="{StaticResource SubText}" VerticalAlignment="Center" Margin="0,0,6,0"/>
+            <RadioButton x:Name="RbRecycle" Content="移到回收站 (可恢复)" IsChecked="True" VerticalAlignment="Center" Margin="0,0,16,0" Foreground="{StaticResource Text}"/>
+            <RadioButton x:Name="RbPermanent" Content="永久删除 (不可恢复)" VerticalAlignment="Center" Foreground="{StaticResource Red}"/>
+          </StackPanel>
+        </Grid>
+        <Grid Grid.Row="2" Margin="0,12,0,0">
+          <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="*"/>
+            <ColumnDefinition Width="Auto"/>
+          </Grid.ColumnDefinitions>
+          <ProgressBar x:Name="CleanBar" Style="{StaticResource BarThin}" Height="6" VerticalAlignment="Center"/>
+          <TextBlock x:Name="CleanStatus" Grid.Column="1" Text="就绪" Foreground="{StaticResource SubText}" FontSize="12" VerticalAlignment="Center" Margin="16,0,0,0"/>
+        </Grid>
+      </Grid>
+    </Border>
+
+    <!-- ============ 日志 ============ -->
+    <Border Grid.Row="3" Background="#FBFBFC" BorderBrush="{StaticResource CardLine}" BorderThickness="0,1,0,0" Height="104">
+      <TextBox x:Name="LogBox" IsReadOnly="True" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto"
+               Background="Transparent" BorderThickness="0" FontFamily="Consolas" FontSize="12" Padding="12,6"/>
+    </Border>
+  </Grid>
+</Window>
+'@
+
+function New-MainWindow {
+  $win = $null
+  try {
+    $win = [System.Windows.Markup.XamlReader]::Parse($script:WpfShellXaml)
+  } catch {
+    Write-CleanLog ('WPF XAML 解析失败: ' + $_.Exception.Message)
+    throw
+  }
+  # 提取命名控件
+  function Get-Ctl([string]$name) { $win.FindName($name) }
+  $script:BtnScan        = Get-Ctl 'BtnScan'
+  $script:BtnCancelScan  = Get-Ctl 'BtnCancelScan'
+  $script:DiskInfo       = Get-Ctl 'DiskInfo'
+  $script:DiskBar        = Get-Ctl 'DiskBar'
+  $script:NavList        = Get-Ctl 'NavList'
+  $script:PageHost       = Get-Ctl 'PageHost'
+  $script:TotalLabel     = Get-Ctl 'TotalLabel'
+  $script:BtnClean       = Get-Ctl 'BtnClean'
+  $script:BtnCancelClean = Get-Ctl 'BtnCancelClean'
+  $script:CleanBar       = Get-Ctl 'CleanBar'
+  $script:CleanStatus    = Get-Ctl 'CleanStatus'
+  $script:LogBox         = Get-Ctl 'LogBox'
+  $btnClearCache         = Get-Ctl 'BtnClearCache'
+  $btnAll                = Get-Ctl 'BtnAll'
+  $btnNone               = Get-Ctl 'BtnNone'
+  $btnLow                = Get-Ctl 'BtnLow'
+  $btnSafe               = Get-Ctl 'BtnSafe'
+  $script:RbPermanent    = Get-Ctl 'RbPermanent'
+  $rbRecycle             = Get-Ctl 'RbRecycle'
+  $adminBadge            = Get-Ctl 'AdminBadge'
+  $adminBadgeText        = Get-Ctl 'AdminBadgeText'
+
+  # 管理员徽标
+  try {
+    $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+    if ($isAdmin) {
+      $adminBadgeText.Text = '管理员'
+      $adminBadgeText.Foreground = (New-WpfBrush '#047857')
+      $adminBadge.Background = (New-WpfBrush '#ECFDF5')
+    } else {
+      $adminBadgeText.Text = '普通模式'
+      $adminBadgeText.Foreground = (New-WpfBrush $script:Theme.Yellow)
+      $adminBadge.Background = (New-WpfBrush '#FEF3C7')
+    }
+  } catch { }
+
+  # 程序图标（代码绘制橙色圆角+白色对勾，无图片资源）
+  try {
+    $iconBmp = New-Object System.Drawing.Bitmap(32, 32)
+    $ig = [System.Drawing.Graphics]::FromImage($iconBmp)
+    $ig.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
+    $ig.Clear([System.Drawing.Color]::Transparent)
+    $ip = New-Object System.Drawing.Drawing2D.GraphicsPath
+    $ip.AddArc(2, 2, 12, 12, 180, 90); $ip.AddArc(18, 2, 12, 12, 270, 90)
+    $ip.AddArc(18, 18, 12, 12, 0, 90); $ip.AddArc(2, 18, 12, 12, 90, 90)
+    $ip.CloseFigure()
+    $ib = New-Object System.Drawing.SolidBrush([System.Drawing.ColorTranslator]::FromHtml($script:Theme.Primary))
+    $ig.FillPath($ib, $ip)
+    $ipen = New-Object System.Drawing.Pen([System.Drawing.Color]::White, 3)
+    $ipen.StartCap = [System.Drawing.Drawing2D.LineCap]::Round
+    $ipen.EndCap = [System.Drawing.Drawing2D.LineCap]::Round
+    $ig.DrawLine($ipen, 9, 17, 14, 22); $ig.DrawLine($ipen, 14, 22, 24, 9)
+    $img = [System.Windows.Interop.Imaging]::CreateBitmapSourceFromHIcon($iconBmp.GetHicon(),
+      [System.Windows.Int32Rect]::Empty, [System.Windows.Media.Imaging.BitmapSizeOptions]::FromEmptyOptions())
+    $win.Icon = $img
+    $ipen.Dispose(); $ib.Dispose(); $ip.Dispose(); $ig.Dispose(); $iconBmp.Dispose()
+  } catch { }
+
+  # ---- 构造 9 个页面并加入 PageHost（Visibility 切换，保留各页状态） ----
+  $script:Pages = @{}
+  $script:NavKeys = @('clean', 'space', 'emptyd', 'sys', 'large', 'soft', 'dupe', 'restore', 'startup')
+  $builders = @(
+    @{ Key = 'clean';   Fn = { New-CleanPage } },
+    @{ Key = 'space';   Fn = { New-SpacePage } },
+    @{ Key = 'emptyd';  Fn = { New-EmptyDirPage } },
+    @{ Key = 'sys';     Fn = { New-SysAccelPage } },
+    @{ Key = 'large';   Fn = { New-LargeFilesPage } },
+    @{ Key = 'soft';    Fn = { New-SoftwarePage } },
+    @{ Key = 'dupe';    Fn = { New-DupeFilesPage } },
+    @{ Key = 'restore'; Fn = { New-RestorePage } },
+    @{ Key = 'startup'; Fn = { New-StartupPage } }
+  )
+  foreach ($b in $builders) {
+    $pg = & $b.Fn
+    $pg.HorizontalAlignment = 'Stretch'
+    $pg.VerticalAlignment = 'Stretch'
+    $pg.Visibility = 'Collapsed'
+    $null = $script:PageHost.Children.Add($pg)
+    $script:Pages[$b.Key] = $pg
+  }
+
+  # ---- 导航切换 ----
+  $script:NavList.Add_SelectionChanged({
     param($s, $e)
     try {
-      $pen = New-Object System.Drawing.Pen([System.Drawing.ColorTranslator]::FromHtml($script:Theme.CardLine))
-      $e.Graphics.DrawLine($pen, 0, $s.Height - 1, $s.Width, $s.Height - 1)
-      $pen.Dispose()
+      $idx = $script:NavList.SelectedIndex
+      if ($idx -lt 0 -or $idx -ge $script:NavKeys.Count) { return }
+      foreach ($k in $script:NavKeys) { $script:Pages[$k].Visibility = 'Collapsed' }
+      $script:Pages[$script:NavKeys[$idx]].Visibility = 'Visible'
     } catch { }
   })
+  # XAML 已带 SelectedIndex=0，SelectionChanged 不会再次触发 → 显式显示第一页
+  foreach ($k in $script:NavKeys) { $script:Pages[$k].Visibility = 'Collapsed' }
+  $script:Pages[$script:NavKeys[0]].Visibility = 'Visible'
+  $script:NavList.SelectedIndex = 0
 
-  $title = New-Object System.Windows.Forms.Label
-  $title.Text = 'DiskCleanerPro'
-  $title.Font = New-Object System.Drawing.Font($script:Theme.FontUi,13, [System.Drawing.FontStyle]::Bold)
-  $title.ForeColor = [System.Drawing.ColorTranslator]::FromHtml($script:Theme.Text)
-  $title.Location = New-Object System.Drawing.Point(16, 6)
-  $title.AutoSize = $true
-  $banner.Controls.Add($title)
-
-  $subtitle = New-Object System.Windows.Forms.Label
-  $subtitle.Text = 'C 盘智能清理工具'
-  $subtitle.Font = New-Object System.Drawing.Font($script:Theme.FontUi, 8.5)
-  $subtitle.ForeColor = [System.Drawing.ColorTranslator]::FromHtml($script:Theme.SubText)
-  $subtitle.Location = New-Object System.Drawing.Point(16, 36)
-  $subtitle.AutoSize = $true
-  $banner.Controls.Add($subtitle)
-
-  $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-  $adminBadge = New-Object System.Windows.Forms.Label
-  $adminBadge.Text = if ($isAdmin) { '管理员' } else { '普通模式' }
-  $adminBadge.Font = New-Object System.Drawing.Font($script:Theme.FontUi, 8, [System.Drawing.FontStyle]::Bold)
-  $adminBadge.ForeColor = [System.Drawing.ColorTranslator]::FromHtml($(if ($isAdmin) { '#047857' } else { $script:Theme.Yellow }))
-  $adminBadge.BackColor = [System.Drawing.ColorTranslator]::FromHtml($(if ($isAdmin) { '#ECFDF5' } else { '#FEF3C7' }))
-  $adminBadge.Padding = New-Object System.Windows.Forms.Padding(8, 4, 8, 4)
-  $adminBadge.Location = New-Object System.Drawing.Point(168, 8)
-  $adminBadge.AutoSize = $true
-  $banner.Controls.Add($adminBadge)
-
-  $script:BtnScan = New-ModernButton
-  $script:BtnScan.Text = '立即重新扫描'
-  $script:BtnScan.Location = New-Object System.Drawing.Point(330, 12)
-  $script:BtnScan.Size = New-Object System.Drawing.Size(110, 32)
-  $banner.Controls.Add($script:BtnScan)
-
-  $btnClearCache = New-ModernButton
-  $btnClearCache.Text = '清空扫描缓存'
-  $btnClearCache.Location = New-Object System.Drawing.Point(446, 12)
-  $btnClearCache.Size = New-Object System.Drawing.Size(110, 32)
-  $banner.Controls.Add($btnClearCache)
-
-  $script:BtnCancelScan = New-ModernButton
-  $script:BtnCancelScan.Text = '取消扫描'
-  $script:BtnCancelScan.Location = New-Object System.Drawing.Point(562, 12)
-  $script:BtnCancelScan.Size = New-Object System.Drawing.Size(80, 32)
-  $script:BtnCancelScan.Enabled = $false
-  $banner.Controls.Add($script:BtnCancelScan)
-
-  $script:DiskInfo = New-Object System.Windows.Forms.Label
-  $script:DiskInfo.Text = '磁盘信息加载中...'
-  $script:DiskInfo.Font = New-Object System.Drawing.Font($script:Theme.FontUi, 9)
-  $script:DiskInfo.ForeColor = [System.Drawing.ColorTranslator]::FromHtml($script:Theme.Text)
-  $script:DiskInfo.AutoSize = $false
-  $script:DiskInfo.TextAlign = [System.Drawing.ContentAlignment]::MiddleRight
-  $script:DiskInfo.Location = New-Object System.Drawing.Point(916, 8)
-  $script:DiskInfo.Size = New-Object System.Drawing.Size(260, 20)
-  $script:DiskInfo.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Right
-  $banner.Controls.Add($script:DiskInfo)
-
-  $script:DiskBar = New-ModernProgressBar -Fill $script:Theme.Primary -Track $script:Theme.CardLine
-  # 右锚定 260px 信息块（标签+细进度条），最窄窗口时左缘 660 > 取消扫描按钮右缘 642，不重叠
-  $script:DiskBar.Location = New-Object System.Drawing.Point(916, 40)
-  $script:DiskBar.Size = New-Object System.Drawing.Size(260, 10)
-  $script:DiskBar.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Right
-  $script:DiskBar.Style = 'Continuous'
-  $banner.Controls.Add($script:DiskBar)
-
-  # ============ 底部日志（轻量化：无框、浅底、紧凑高度） ============
-  $script:LogBox = New-Object System.Windows.Forms.RichTextBox
-  $script:LogBox.Dock = 'Bottom'
-  $script:LogBox.Height = 110
-  $script:LogBox.ReadOnly = $true
-  $script:LogBox.BackColor = [System.Drawing.ColorTranslator]::FromHtml('#FBFBFC')
-  $script:LogBox.ForeColor = [System.Drawing.ColorTranslator]::FromHtml($script:Theme.Text)
-  $script:LogBox.Font = New-Object System.Drawing.Font('Consolas', 9)
-  $script:LogBox.BorderStyle = 'None'
-
+  # ---- 日志 ----
   function script:Log-Line {
     param([string]$Msg)
     try {
       $script:LogBox.AppendText((Get-Date -Format 'HH:mm:ss') + '  ' + $Msg + "`r`n")
-      $script:LogBox.SelectionStart = $script:LogBox.TextLength
-      $script:LogBox.ScrollToCaret()
+      $script:LogBox.ScrollToEnd()
     } catch { }
     Write-CleanLog $Msg
   }
 
-  # ============ 左侧导航（现代应用风格：竖排侧边栏替代顶部页签） ============
-  $tabs = New-Object System.Windows.Forms.TabControl
-  $tabs.Dock = 'Fill'
-  # 先按设计宽度设置：其下所有 TabPage 在加入前都能按真实宽度布局，锚定子控件不会按默认 200 宽算错
-  $tabs.Width = $f.ClientSize.Width
-  $tabs.Alignment = 'Left'
-  $tabs.SizeMode = 'Fixed'
-  $tabs.ItemSize = New-Object System.Drawing.Size(168, 44)
-  $tabs.Multiline = $true
-  $tabs.DrawMode = 'OwnerDrawFixed'
-  $tabs.BackColor = [System.Drawing.ColorTranslator]::FromHtml($script:Theme.NavBg)
-  # 悬停高亮跟踪（自绘无原生热态，MouseMove 记录悬停项并重绘）
-  $script:NavHover = -1
-  $tabs.add_MouseMove({
-    param($s, $e)
-    try {
-      $tc = [System.Windows.Forms.TabControl]$s
-      $idx = -1
-      if ($e.X -lt $tc.ItemSize.Width) {
-        $idx = [int][Math]::Floor($e.Y / $tc.ItemSize.Height)
-        if ($idx -lt 0 -or $idx -ge $tc.TabPages.Count) { $idx = -1 }
-      }
-      if ($idx -ne $script:NavHover) { $script:NavHover = $idx; $tc.Invalidate() }
-    } catch { }
-  })
-  $tabs.add_MouseLeave({
-    param($s, $e)
-    try { if ($script:NavHover -ne -1) { $script:NavHover = -1; $s.Invalidate() } } catch { }
-  })
-  $tabs.add_DrawItem({
-    param($s, $e)
-    try {
-      $tc = [System.Windows.Forms.TabControl]$s
-      $idx = $e.Index
-      $rect = $tc.GetTabRect($idx)
-      $sel = ($idx -eq $tc.SelectedIndex)
-      $hov = ($idx -eq $script:NavHover)
-      $g = $e.Graphics
-      $g.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
-      # 底色：未选中铺导航条色；悬停浅灰胶囊；选中白色圆角胶囊 + 左侧橙色竖条
-      if ($sel -or $hov) {
-        $r = [System.Drawing.Rectangle]::FromLTRB($rect.X + 4, $rect.Y + 4, $rect.Right - 4, $rect.Bottom - 4)
-        $rad = 8
-        $gp = New-Object System.Drawing.Drawing2D.GraphicsPath
-        $gp.AddArc($r.X, $r.Y, $rad * 2, $rad * 2, 180, 90)
-        $gp.AddArc($r.Right - $rad * 2, $r.Y, $rad * 2, $rad * 2, 270, 90)
-        $gp.AddArc($r.Right - $rad * 2, $r.Bottom - $rad * 2, $rad * 2, $rad * 2, 0, 90)
-        $gp.AddArc($r.X, $r.Bottom - $rad * 2, $rad * 2, $rad * 2, 90, 90)
-        $gp.CloseFigure()
-        $fill = if ($sel) { [System.Drawing.Color]::White } else { [System.Drawing.ColorTranslator]::FromHtml($script:Theme.NavHover) }
-        $brush = New-Object System.Drawing.SolidBrush($fill)
-        $g.FillPath($brush, $gp)
-        $brush.Dispose()
-        if ($sel) {
-          $barBrush = New-Object System.Drawing.SolidBrush([System.Drawing.ColorTranslator]::FromHtml($script:Theme.Primary))
-          $g.FillRectangle($barBrush, $r.X, $r.Y + 6, 3, $r.Height - 12)
-          $barBrush.Dispose()
-        }
-        $gp.Dispose()
-      } else {
-        $brush = New-Object System.Drawing.SolidBrush([System.Drawing.ColorTranslator]::FromHtml($script:Theme.NavBg))
-        $g.FillRectangle($brush, $rect)
-        $brush.Dispose()
-      }
-      $txtColor = if ($sel) { [System.Drawing.ColorTranslator]::FromHtml($script:Theme.Text) } else { [System.Drawing.ColorTranslator]::FromHtml('#5B6470') }
-      $font = if ($sel) { New-Object System.Drawing.Font($script:Theme.FontUi, 10, [System.Drawing.FontStyle]::Bold) } else { New-Object System.Drawing.Font($script:Theme.FontUi, 10) }
-      $fmt = New-Object System.Drawing.StringFormat
-      $fmt.Alignment = [System.Drawing.StringAlignment]::Center
-      $fmt.LineAlignment = [System.Drawing.StringAlignment]::Center
-      $textBrush = New-Object System.Drawing.SolidBrush($txtColor)
-      $rectF = New-Object System.Drawing.RectangleF($rect.X, $rect.Y, $rect.Width, $rect.Height)
-      $g.DrawString($tc.TabPages[$idx].Text, $font, $textBrush, $rectF, $fmt)
-      $textBrush.Dispose(); $fmt.Dispose(); $font.Dispose()
-    } catch { }
-  })
-
-  # ===== Tab1 缓存清理 =====
-  $tabClean = New-Object System.Windows.Forms.TabPage
-  $tabClean.Text = '缓存清理'
-  $tabClean.Width = $f.ClientSize.Width
-  $tabClean.BackColor = [System.Drawing.ColorTranslator]::FromHtml($script:Theme.Bg)
-
-  # 底部操作条（先加入 Dock，占位）：三行布局 = 合计 / 批量选择+清理方式 / 进度条
-  $actionBar = New-Object System.Windows.Forms.Panel
-  $actionBar.Dock = 'Bottom'
-  $actionBar.Height = 132
-  # 先按设计宽度设置：右锚定/拉伸子控件首次布局时按真实右缘计算
-  $actionBar.Width = $f.ClientSize.Width
-  $actionBar.BackColor = [System.Drawing.ColorTranslator]::FromHtml($script:Theme.CardBg)
-  # 顶部分隔细线（与白色头部呼应）
-  $actionBar.add_Paint({
-    param($s, $e)
-    try {
-      $pen = New-Object System.Drawing.Pen([System.Drawing.ColorTranslator]::FromHtml($script:Theme.CardLine))
-      $e.Graphics.DrawLine($pen, 0, 0, $s.Width, 0)
-      $pen.Dispose()
-    } catch { }
-  })
-
-  $script:TotalLabel = New-Object System.Windows.Forms.Label
-  $script:TotalLabel.Text = '合计可释放: 0 B'
-  $script:TotalLabel.Font = New-Object System.Drawing.Font($script:Theme.FontUi,12, [System.Drawing.FontStyle]::Bold)
-  $script:TotalLabel.ForeColor = [System.Drawing.ColorTranslator]::FromHtml($script:Theme.Primary)
-  $script:TotalLabel.Location = New-Object System.Drawing.Point(16, 10)
-  $script:TotalLabel.AutoSize = $true
-  $actionBar.Controls.Add($script:TotalLabel)
-
-  $btnAll = New-ModernButton
-  $btnAll.Text = '全选'
-  $btnAll.Location = New-Object System.Drawing.Point(16, 48)
-  $btnAll.Size = New-Object System.Drawing.Size(76, 30)
-  $actionBar.Controls.Add($btnAll)
-
-  $btnNone = New-ModernButton
-  $btnNone.Text = '全不选'
-  $btnNone.Location = New-Object System.Drawing.Point(98, 48)
-  $btnNone.Size = New-Object System.Drawing.Size(76, 30)
-  $actionBar.Controls.Add($btnNone)
-
-  $btnLow = New-ModernButton
-  $btnLow.Text = '仅低风险'
-  $btnLow.Location = New-Object System.Drawing.Point(180, 48)
-  $btnLow.Size = New-Object System.Drawing.Size(92, 30)
-  $actionBar.Controls.Add($btnLow)
-
-  $btnSafe = New-ModernButton
-  $btnSafe.Text = '一键清理安全项'
-  $btnSafe.BackColor = [System.Drawing.ColorTranslator]::FromHtml($script:Theme.Green)
-  $btnSafe.ForeColor = [System.Drawing.Color]::White
-  $btnSafe.FlatStyle = 'Flat'
-  $btnSafe.Location = New-Object System.Drawing.Point(278, 48)
-  $btnSafe.Size = New-Object System.Drawing.Size(130, 30)
-  $actionBar.Controls.Add($btnSafe)
-
-  $delModeLabel = New-Object System.Windows.Forms.Label
-  $delModeLabel.Text = '删除方式:'
-  $delModeLabel.ForeColor = [System.Drawing.ColorTranslator]::FromHtml($script:Theme.SubText)
-  $delModeLabel.Location = New-Object System.Drawing.Point(16, 97)
-  $delModeLabel.AutoSize = $true
-  $actionBar.Controls.Add($delModeLabel)
-
-  $rbRecycle = New-Object System.Windows.Forms.RadioButton
-  $rbRecycle.Text = '移到回收站 (可恢复)'
-  $rbRecycle.Checked = $true
-  $rbRecycle.Location = New-Object System.Drawing.Point(86, 97)
-  $rbRecycle.AutoSize = $true
-  $actionBar.Controls.Add($rbRecycle)
-
-  $script:RbPermanent = New-Object System.Windows.Forms.RadioButton
-  $script:RbPermanent.Text = '永久删除 (不可恢复)'
-  $script:RbPermanent.ForeColor = [System.Drawing.ColorTranslator]::FromHtml($script:Theme.Red)
-  $script:RbPermanent.Location = New-Object System.Drawing.Point(238, 97)
-  $script:RbPermanent.AutoSize = $true
-  $actionBar.Controls.Add($script:RbPermanent)
-
-  $script:BtnClean = New-ModernButton
-  $script:BtnClean.Text = '开始清理'
-  $script:BtnClean.BackColor = [System.Drawing.ColorTranslator]::FromHtml($script:Theme.Primary)
-  $script:BtnClean.ForeColor = [System.Drawing.Color]::White
-  $script:BtnClean.Font = New-Object System.Drawing.Font($script:Theme.FontUi,12, [System.Drawing.FontStyle]::Bold)
-  $script:BtnClean.FlatStyle = 'Flat'
-  $script:BtnClean.Location = New-Object System.Drawing.Point(1034, 16)
-  $script:BtnClean.Size = New-Object System.Drawing.Size(150, 60)
-  $script:BtnClean.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Right
-  $actionBar.Controls.Add($script:BtnClean)
-
-  $script:BtnCancelClean = New-ModernButton
-  $script:BtnCancelClean.Text = '取消'
-  $script:BtnCancelClean.Location = New-Object System.Drawing.Point(954, 16)
-  $script:BtnCancelClean.Size = New-Object System.Drawing.Size(70, 60)
-  $script:BtnCancelClean.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Right
-  $script:BtnCancelClean.Enabled = $false
-  $actionBar.Controls.Add($script:BtnCancelClean)
-
-  $script:CleanBar = New-ModernProgressBar
-  # 进度条左|右锚定：左右留白各 16px（第3行），缩小时拉伸
-  $script:CleanBar.Location = New-Object System.Drawing.Point(16, 120)
-  $script:CleanBar.Size = New-Object System.Drawing.Size(1168, 8)
-  $script:CleanBar.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Right
-  $actionBar.Controls.Add($script:CleanBar)
-
-  $script:CleanStatus = New-Object System.Windows.Forms.Label
-  $script:CleanStatus.Text = '就绪'
-  $script:CleanStatus.ForeColor = [System.Drawing.ColorTranslator]::FromHtml($script:Theme.SubText)
-  $script:CleanStatus.Location = New-Object System.Drawing.Point(420, 101)
-  $script:CleanStatus.AutoSize = $true
-  $actionBar.Controls.Add($script:CleanStatus)
-
-  # 右侧详情面板
-  $detailPanel = New-Object DiskCleaner.CardPanel
-  $detailPanel.Dock = 'Right'
-  $detailPanel.Width = 260
-  $detailPanel.BackColor = [System.Drawing.Color]::White
-  $detailPanel.Radius = 6
-
-  $script:DetailTitle = New-Object System.Windows.Forms.Label
-  $script:DetailTitle.Text = '项目说明'
-  $script:DetailTitle.Font = New-Object System.Drawing.Font($script:Theme.FontUi,11, [System.Drawing.FontStyle]::Bold)
-  $script:DetailTitle.ForeColor = [System.Drawing.ColorTranslator]::FromHtml($script:Theme.Primary)
-  $script:DetailTitle.Location = New-Object System.Drawing.Point(12, 10)
-  $script:DetailTitle.AutoSize = $true
-  $detailPanel.Controls.Add($script:DetailTitle)
-
-  $script:DetailName = New-Object System.Windows.Forms.Label
-  $script:DetailName.Text = '（选择左侧清理项）'
-  $script:DetailName.Font = New-Object System.Drawing.Font($script:Theme.FontUi,10, [System.Drawing.FontStyle]::Bold)
-  $script:DetailName.ForeColor = [System.Drawing.ColorTranslator]::FromHtml($script:Theme.Text)
-  $script:DetailName.Location = New-Object System.Drawing.Point(12, 40)
-  $script:DetailName.MaximumSize = New-Object System.Drawing.Size(236, 0)
-  $script:DetailName.AutoSize = $true
-  $detailPanel.Controls.Add($script:DetailName)
-
-  $script:DetailRisk = New-Object System.Windows.Forms.Label
-  $script:DetailRisk.Text = ''
-  $script:DetailRisk.Font = New-Object System.Drawing.Font($script:Theme.FontUi,10, [System.Drawing.FontStyle]::Bold)
-  $script:DetailRisk.Location = New-Object System.Drawing.Point(12, 68)
-  $script:DetailRisk.AutoSize = $true
-  $detailPanel.Controls.Add($script:DetailRisk)
-
-  $script:DetailDesc = New-Object System.Windows.Forms.Label
-  $script:DetailDesc.Text = ''
-  $script:DetailDesc.ForeColor = [System.Drawing.ColorTranslator]::FromHtml($script:Theme.Text)
-  $script:DetailDesc.Location = New-Object System.Drawing.Point(12, 96)
-  $script:DetailDesc.MaximumSize = New-Object System.Drawing.Size(236, 0)
-  $script:DetailDesc.AutoSize = $true
-  $detailPanel.Controls.Add($script:DetailDesc)
-
-  $script:DetailPath = New-Object System.Windows.Forms.Label
-  $script:DetailPath.Text = ''
-  $script:DetailPath.ForeColor = [System.Drawing.ColorTranslator]::FromHtml($script:Theme.Disabled)
-  $script:DetailPath.Font = New-Object System.Drawing.Font('Consolas', 8)
-  $script:DetailPath.Location = New-Object System.Drawing.Point(12, 190)
-  $script:DetailPath.MaximumSize = New-Object System.Drawing.Size(236, 0)
-  $script:DetailPath.AutoSize = $true
-  $detailPanel.Controls.Add($script:DetailPath)
-
-  # 清理项列表（最后加入 Dock，占满剩余空间）
-  $script:MainListView = New-Object System.Windows.Forms.ListView
-  $script:MainListView.Dock = 'Fill'
-  $script:MainListView.View = 'Details'
-  $script:MainListView.CheckBoxes = $true
-  $script:MainListView.FullRowSelect = $true
-  $script:MainListView.GridLines = $false
-  $script:MainListView.HideSelection = $false
-  $script:MainListView.UseCompatibleStateImageBehavior = $false
-  $null = $script:MainListView.Columns.Add('名称', 300)
-  $null = $script:MainListView.Columns.Add('大小', 100)
-  $null = $script:MainListView.Columns.Add('风险', 80)
-  $null = $script:MainListView.Columns.Add('说明', 480)
-  Register-ColumnSort -Lv $script:MainListView -NumericCols @(1)
-
-  $tabClean.Controls.Add($actionBar)
-  $tabClean.Controls.Add($detailPanel)
-  $tabClean.Controls.Add($script:MainListView)
-  $tabs.Controls.Add($tabClean)
-
-  # ===== Tab2-9 附加功能页 =====
-  $tabs.Controls.Add((New-SpacePage))
-  $tabs.Controls.Add((New-EmptyDirPage))
-  $tabs.Controls.Add((New-SysAccelPage))
-  $tabs.Controls.Add((New-LargeFilesPage))
-  $tabs.Controls.Add((New-SoftwarePage))
-  $tabs.Controls.Add((New-DupeFilesPage))
-  $tabs.Controls.Add((New-RestorePage))
-  $tabs.Controls.Add((New-StartupPage))
-
-  $f.Controls.Add($banner)
-  $f.Controls.Add($script:LogBox)
-  $f.Controls.Add($tabs)
-
-  # ============ 逻辑函数 ============
-  $script:SuppressPrompt = $false
-
+  # ---- 磁盘信息 ----
   function script:Refresh-DiskInfo {
     try {
       $d = Get-PSDrive -Name 'C'
@@ -2936,278 +1895,25 @@ function New-MainWindow {
     } catch { }
   }
 
-  function script:Update-Total {
-    $total = 0L
-    foreach ($li in $script:MainListView.Items) {
-      if ($li.Checked -and $li.Tag) { $total += [long]$li.Tag.Size }
-    }
-    $script:TotalLabel.Text = '合计可释放: ' + (Format-Bytes $total)
-  }
-
-  # ===== 扫描 worker =====
-  $script:ScanWorker = New-Object System.ComponentModel.BackgroundWorker
-  $script:ScanWorker.WorkerReportsProgress = $true
-  $script:ScanWorker.WorkerSupportsCancellation = $true
-  $scanDoWork = {
-    param($s, $e)
-    $items = Load-CleanupItems
-    $rows = New-Object System.Collections.Generic.List[object]
-    $n = 0
-    foreach ($it in $items) {
-      if ($s.CancellationPending) { $e.Cancel = $true; return }
-      $size = Get-ItemSize $it
-      $rows.Add([pscustomobject]@{ Item = $it; Size = $size })
-      $n++
-      $s.ReportProgress([int](100.0 * $n / $items.Count), $it.name)
-    }
-    $e.Result = @{ Rows = $rows }
-  }
-  Register-WorkerBody -Worker $script:ScanWorker -Name 'Scan' -ScriptBlock $scanDoWork
-  $script:ScanWorker.add_ProgressChanged({
-    param($s, $e)
-    $script:DiskBar.Value = [Math]::Min(100, $e.ProgressPercentage)
-    $script:DiskInfo.Text = ('扫描中... ' + [string]$e.UserState + '  (' + $e.ProgressPercentage + '%)')
-  })
-  $script:ScanWorker.add_RunWorkerCompleted({
-    param($s, $e)
-    $script:BtnScan.Enabled = $true
-    $script:BtnCancelScan.Enabled = $false
-    if ($e.Error) {
-      $script:DiskInfo.Text = '扫描出错'
-      Log-Line ('扫描出错: ' + $e.Error.Message)
-      return
-    }
-    if ($e.Cancelled) {
-      Log-Line '扫描已取消'
-      $script:DiskInfo.Text = '扫描已取消'
-      return
-    }
-    $script:MainListView.BeginUpdate()
-    $script:MainListView.Items.Clear()
-    $script:MainListView.Groups.Clear()
-    $groups = @{}
-    foreach ($row in $e.Result.Rows) {
-      $it = $row.Item; $size = [long]$row.Size
-      $li = [System.Windows.Forms.ListViewItem]::new([string[]]@($it.name, (Format-Bytes $size), (Get-RiskText $it.risk), $it.desc))
-      $li.Tag = [pscustomobject]@{ Item = $it; Size = $size }
-      $li.ForeColor = [System.Drawing.ColorTranslator]::FromHtml((Get-RiskColor $it.risk))
-      $li.BackColor = [System.Drawing.ColorTranslator]::FromHtml((Get-RiskBackColor $it.risk))
-      $catKey = switch ($it.category) {
-        'system'  { '系统' }
-        'browser' { '浏览器' }
-        'dev'     { '开发工具' }
-        'privacy' { '隐私清理' }
-        default   { '常用软件' }
-      }
-      if (-not $groups.ContainsKey($catKey)) {
-        $g = New-Object System.Windows.Forms.ListViewGroup($catKey)
-        $script:MainListView.Groups.Add($g)
-        $groups[$catKey] = $g
-      }
-      $li.Group = $groups[$catKey]
-      $li.Checked = [bool]$it.defaultChecked
-      $null = $script:MainListView.Items.Add($li)
-    }
-    $script:MainListView.EndUpdate()
-    Save-SizeCache
-    Update-Total
-    Refresh-DiskInfo
-    Log-Line ('扫描完成: 共 ' + $script:MainListView.Items.Count + ' 项清理目标')
-  })
-
+  # ---- 事件（主清理页在下一提交接通完整逻辑） ----
   function script:Start-Scan {
-    $script:BtnScan.Enabled = $false
-    $script:BtnCancelScan.Enabled = $true
-    $script:MainListView.Items.Clear()
-    $script:MainListView.Groups.Clear()
-    Update-Total
-    Log-Line '开始扫描清理项大小（未缓存项首次较慢）...'
-    $script:ScanWorker.RunWorkerAsync()
+    Log-Line '扫描功能正在 WPF 重构中（后续提交启用）'
   }
+  $script:BtnScan.Add_Click({ Start-Scan })
+  $btnClearCache.Add_Click({
+    Log-Line '清空扫描缓存功能正在 WPF 重构中'
+  })
+  $script:BtnCancelScan.Add_Click({ })
 
-  # ===== 清理 worker =====
-  $script:CleanWorker = New-Object System.ComponentModel.BackgroundWorker
-  $script:CleanWorker.WorkerSupportsCancellation = $true
-  $script:CleanWorker.WorkerReportsProgress = $true
-  $cleanDoWork = {
-    param($s, $e)
-    $arg = $e.Argument
-    $mode = $arg.Mode
-    $totalPlanned = 0L; $totalReleased = 0L; $skippedTotal = 0; $done = 0
-    $cancelled = $false
-    $rows = New-Object System.Collections.Generic.List[object]
-    foreach ($it in $arg.Items) {
-      if ($s.CancellationPending) { $cancelled = $true; break }
-      $planned = Get-ItemSize $it -Force
-      $r = Invoke-SafeDelete $it $mode
-      $totalPlanned += [long]$planned
-      $totalReleased += [long]$r.Released
-      $skippedTotal += [int]$r.Skipped
-      $rows.Add([pscustomobject]@{
-        Name     = [string]$it.name
-        Category = [string]$it.category
-        Risk     = [string]$it.risk
-        Size     = [long]$planned
-        Released = [long]$r.Released
-        Skipped  = [int]$r.Skipped
-      })
-      $done++
-      $s.ReportProgress([int](100.0 * $done / $arg.Items.Count), ('{0}  释放 {1}' -f $it.name, (Format-Bytes $r.Released)))
-    }
-    # 注意：不设置 $e.Cancel —— WinForms 在 Cancelled=true 时访问 e.Result 会抛异常，
-    # 取消标志随 Result 一起带回（Cancelled 字段），保证"取消也导出已完成部分"的报告路径可用
-    $e.Result = @{ Planned = $totalPlanned; Released = $totalReleased; Skipped = $skippedTotal; Details = $rows; Cancelled = $cancelled }
-  }
-  Register-WorkerBody -Worker $script:CleanWorker -Name 'Clean' -ScriptBlock $cleanDoWork
-  $script:CleanWorker.add_ProgressChanged({
-    param($s, $e)
-    $script:CleanBar.Value = [Math]::Min(100, $e.ProgressPercentage)
-    $st = [string]$e.UserState
-    if ($st.Length -gt 32) { $st = $st.Substring(0, 32) + '...' }
-    $script:CleanStatus.Text = '清理中... ' + $st
-    Log-Line ('清理: ' + [string]$e.UserState)
-  })
-  $script:CleanWorker.add_RunWorkerCompleted({
-    param($s, $e)
-    $script:CleanBar.Value = 0
-    $script:BtnClean.Enabled = $true
-    $script:BtnCancelClean.Enabled = $false
-    if ($e.Error) {
-      $script:CleanStatus.Text = '清理出错'
-      Log-Line ('清理出错: ' + $e.Error.Message)
-      return
-    }
-    # 取消标志由 DoWork 放在 Result.Cancelled 里带回：Cancelled=true 时访问 e.Result 会抛异常
-    try { $res = $e.Result } catch { return }
-    if ($res.Cancelled) {
-      $script:CleanStatus.Text = '已取消'
-      Log-Line '清理已取消（已完成部分保留）'
-      if ($res.Details -and $res.Details.Count -gt 0) {
-        $rep2 = Export-CleanReport -Details $res.Details -Planned $res.Planned -Released $res.Released -Skipped $res.Skipped -Mode $script:Settings.DeleteMode -Note '已取消，仅含完成部分'
-        if ($rep2) { Log-Line ('清理报告已导出: ' + $rep2) }
-      }
-    } else {
-      $script:CleanStatus.Text = '清理完成'
-      Log-Line ('清理完成: 计划释放 ' + (Format-Bytes $res.Planned) + ' / 实际释放 ' + (Format-Bytes $res.Released) + ' / 跳过 ' + $res.Skipped)
-      # 自动导出清理报告（含已取消时的已完成部分）
-      $rep = Export-CleanReport -Details $res.Details -Planned $res.Planned -Released $res.Released -Skipped $res.Skipped -Mode $script:Settings.DeleteMode
-      if ($rep) { Log-Line ('清理报告已导出: ' + $rep) }
-      try {
-        [System.Windows.Forms.MessageBox]::Show(
-          ('清理完成' + "`r`n`r`n计划释放: {0}`r`n实际释放: {1}`r`n跳过占用/受保护: {2}" -f (Format-Bytes $res.Planned), (Format-Bytes $res.Released), $res.Skipped),
-          '清理结果', 'OK', 'Information')
-      } catch { }
-    }
-    Refresh-DiskInfo
-    Update-Total
-  })
-
-  # ============ 事件 ============
-  $script:MainListView.add_ItemCheck({
-    param($s, $e)
-    if ($script:SuppressPrompt) { return }
-    if ($e.NewValue -eq [System.Windows.Forms.CheckState]::Checked) {
-      $li = $script:MainListView.Items[$e.Index]
-      if ($li.Tag -and $li.Tag.Item.risk -eq 'red') {
-        $r = [System.Windows.Forms.MessageBox]::Show(('「' + $li.Text + '」风险较高，可能涉及个人数据。确定勾选清理吗？'), '风险确认', 'YesNo', 'Warning')
-        if ($r -ne 'Yes') { $e.NewValue = [System.Windows.Forms.CheckState]::Unchecked }
-      }
-    }
-  })
-  $script:MainListView.add_ItemChecked({ param($s, $e) Update-Total })
-  $script:MainListView.add_SelectedIndexChanged({
-    if ($script:MainListView.SelectedItems.Count -gt 0) {
-      $li = $script:MainListView.SelectedItems[0]
-      if ($li.Tag) {
-        $it = $li.Tag.Item
-        $script:DetailName.Text = $it.name
-        $script:DetailRisk.Text = '风险: ' + (Get-RiskText $it.risk)
-        $script:DetailRisk.ForeColor = [System.Drawing.ColorTranslator]::FromHtml((Get-RiskColor $it.risk))
-        $script:DetailDesc.Text = $it.desc
-        $script:DetailPath.Text = ($it.paths -join "`r`n")
-      }
-    }
-  })
-
-  $script:BtnScan.add_Click({ Start-Scan })
-  $btnClearCache.add_Click({
-    $script:SizeCache = @{}
-    $p = Join-Path $script:DataDir 'size-cache.json'
-    if (Test-Path $p) { Remove-Item -LiteralPath $p -Force -ErrorAction SilentlyContinue }
-    Log-Line '已清空扫描缓存，下次扫描全量实测'
-    Start-Scan
-  })
-  $script:BtnCancelScan.add_Click({ $script:ScanWorker.CancelAsync() })
-
-  $btnAll.add_Click({
-    $script:SuppressPrompt = $true
-    try { foreach ($li in $script:MainListView.Items) { $li.Checked = $true } } finally { $script:SuppressPrompt = $false }
-  })
-  $btnNone.add_Click({
-    $script:SuppressPrompt = $true
-    try { foreach ($li in $script:MainListView.Items) { $li.Checked = $false } } finally { $script:SuppressPrompt = $false }
-  })
-  $btnLow.add_Click({
-    $script:SuppressPrompt = $true
-    try { foreach ($li in $script:MainListView.Items) { $li.Checked = ($li.Tag -and $li.Tag.Item.risk -eq 'green') } } finally { $script:SuppressPrompt = $false }
-  })
-  $btnSafe.add_Click({
-    # 一键清理安全项 = 绿 + 黄（排除红）
-    $script:SuppressPrompt = $true
-    try { foreach ($li in $script:MainListView.Items) { $li.Checked = ($li.Tag -and $li.Tag.Item.risk -ne 'red') } } finally { $script:SuppressPrompt = $false }
-  })
-
-  $script:RbPermanent.add_CheckedChanged({
-    if ($script:RbPermanent.Checked) {
-      $script:Settings.DeleteMode = 'Permanent'
-      Save-Settings
-      try {
-        [System.Windows.Forms.MessageBox]::Show('你已切换到【永久删除】模式：清理后文件无法从回收站恢复，请谨慎操作！', '警告', 'OK', 'Warning')
-      } catch { }
-    } else {
-      $script:Settings.DeleteMode = 'Recycle'
-      Save-Settings
-    }
-  })
-
-  $script:BtnClean.add_Click({
-    $checked = @($script:MainListView.Items | Where-Object { $_.Checked -and $_.Tag } | ForEach-Object { $_.Tag.Item })
-    if ($checked.Count -eq 0) {
-      try { [System.Windows.Forms.MessageBox]::Show('请先勾选要清理的项目。', '提示', 'OK', 'Information') } catch { }
-      return
-    }
-    $mode = if ($script:RbPermanent.Checked) { 'Permanent' } else { 'Recycle' }
-    if ($mode -eq 'Permanent') {
-      $r = [System.Windows.Forms.MessageBox]::Show('你选择了【永久删除】！文件将无法从回收站恢复。确认继续？', '危险操作', 'YesNo', 'Warning')
-      if ($r -ne 'Yes') { return }
-    }
-    $reds = @($checked | Where-Object { $_.risk -eq 'red' })
-    if ($reds.Count -gt 0) {
-      $names = ($reds | ForEach-Object { $_.name }) -join '、'
-      $r = [System.Windows.Forms.MessageBox]::Show(('以下高风险项将被清理（可能影响个人数据）：' + $names + "`r`n`r`n确认继续？"), '高风险确认', 'YesNo', 'Warning')
-      if ($r -ne 'Yes') { return }
-    }
-    $script:BtnClean.Enabled = $false
-    $script:BtnCancelClean.Enabled = $true
-    $script:CleanBar.Value = 0
-    $script:CleanStatus.Text = '清理中...'
-    $modeText = if ($mode -eq 'Permanent') { '永久删除' } else { '回收站' }
-    Log-Line ('开始清理: ' + $checked.Count + ' 项, 模式=' + $modeText)
-    $script:CleanWorker.RunWorkerAsync(@{ Items = $checked; Mode = $mode })
-  })
-  $script:BtnCancelClean.add_Click({ $script:CleanWorker.CancelAsync() })
-
-  # 恢复上次删除模式
+  # 恢复删除模式
   Load-Settings
-  if ($script:Settings.DeleteMode -eq 'Permanent') { $script:RbPermanent.Checked = $true }
+  if ($script:Settings.DeleteMode -eq 'Permanent') { $script:RbPermanent.IsChecked = $true }
 
-  $f.add_Shown({
-    Refresh-DiskInfo
-    Log-Line '工具已就绪。勾选要清理的项目后点击「开始清理」；删除默认进回收站可恢复。'
-    Start-Scan
-  })
+  # 就绪
+  Refresh-DiskInfo
+  Log-Line '工具已就绪（WPF 界面重构中，主清理功能后续提交启用）。'
 
-  return $f
+  return $win
 }
 #endregion
 
@@ -3303,6 +2009,6 @@ function Run-SelfTest {
 
 #region 入口
 if ($SelfTest) { Run-SelfTest; return }
-$form = New-MainWindow
-[System.Windows.Forms.Application]::Run($form)
+$win = New-MainWindow
+$null = $win.ShowDialog()
 #endregion
