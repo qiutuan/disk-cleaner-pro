@@ -218,6 +218,94 @@ function Load-CleanupItems {
 }
 #endregion
 
+#region 后台任务桥接（PS7 runspace 修复）
+# PS7 下 BackgroundWorker.DoWork 委托的 prologue 在 GetContextFromTLS() 处失败——
+# ThreadPool 线程没有 runspace，脚本连第一行都执行不到（实测注入 DefaultRunspace 也无效，
+# 因为注入行本身也是 PowerShell 语句）。方案：用 C# 桥接委托，在 DoWork 线程上先设好
+# DefaultRunspace，再把脚本交给各自预置的 worker runspace 执行（进度/取消/结果照常封送）。
+Add-Type -AssemblyName System.Management.Automation
+if (-not ('WorkerBridge' -as [type])) {
+Add-Type -TypeDefinition @'
+using System;
+using System.Management.Automation;
+using System.Management.Automation.Runspaces;
+using System.ComponentModel;
+public static class WorkerBridge {
+  public static DoWorkEventHandler MakeDoWork(Runspace rs, string script) {
+    return delegate(object sender, DoWorkEventArgs e) {
+      Runspace.DefaultRunspace = rs;
+      using (var ps = PowerShell.Create()) {
+        ps.Runspace = rs;
+        ps.AddScript(script).AddArgument(sender).AddArgument(e);
+        ps.Invoke();
+      }
+    };
+  }
+}
+'@
+}
+
+$script:WorkerRs = @{}          # name -> runspace（每个 worker 独立，避免并发争用）
+$script:WorkerSourceCache = $null
+
+function script:Get-WorkerSource {
+  # 读取自身文件，取 #region 入口 之前的函数/数据段，作为 worker runspace 的初始化源
+  if ($script:WorkerSourceCache) { return $script:WorkerSourceCache }
+  try {
+    $src = Get-Content -Raw -Encoding UTF8 (Join-Path $script:ToolRoot 'DiskCleaner.ps1')
+    # 用"行首锚定"的正则定位入口区标记——不能 IndexOf 字面量（本函数里的 '#region 入口'
+    # 字符串字面量会与标记碰撞，导致把源截断在本函数中途）
+    $m = [regex]::Match($src, '(?m)^#region 入口\s*$')
+    if (-not $m.Success) { throw '入口标记未找到' }
+    $seg = $src.Substring(0, $m.Index)
+    # 剔除 pre-entry 的路径赋值与 param 块（worker 不需要 $SelfTest，且动态注入时它们会失效）
+    $seg = $seg -replace '(?m)^\$script:(ToolRoot|DataDir|LogDir)\s*=.*$', ''
+    $seg = $seg -replace '(?m)^param\s*\(.*$', ''
+    $script:WorkerSourceCache = $seg
+    return $seg
+  } catch {
+    Write-CleanLog ("无法生成 worker 初始化源: $($_.Exception.Message)")
+    return $null
+  }
+}
+
+function script:Get-WorkerRunspace {
+  param([string]$Name)
+  if ($script:WorkerRs.ContainsKey($Name)) { return $script:WorkerRs[$Name] }
+  $src = Get-WorkerSource
+  if (-not $src) { throw "worker[$Name] 初始化源不可用" }
+  $rs = [runspacefactory]::CreateRunspace()
+  $rs.Open()
+  $ps = [powershell]::Create(); $ps.Runspace = $rs
+  try {
+    $tool = $script:ToolRoot.Replace("'", "''")
+    $data = $script:DataDir.Replace("'", "''")
+    $log  = $script:LogDir.Replace("'", "''")
+    $init = "`$script:ToolRoot='$tool'`n`$script:DataDir='$data'`n`$script:LogDir='$log'`n" + $src
+    $null = $ps.AddScript($init).Invoke()
+    # 绑定共享 SizeCache 引用（必须在源之后：源内 line 222 会自建独立 @{}，先跑源再覆盖引用）
+    $null = $ps.AddScript('$script:SizeCache = $args[0]').AddArgument($script:SizeCache).Invoke()
+    $errs = @($ps.Streams.Error)
+    if ($errs.Count -gt 0) {
+      Write-CleanLog ("worker[$Name] 初始化错误 {0} 条（示例: {1}）" -f $errs.Count, $errs[0].ToString())
+    }
+  } catch {
+    $rs.Close(); $rs.Dispose()
+    throw "worker[$Name] 初始化失败: $($_.Exception.Message)"
+  } finally {
+    $ps.Dispose()
+  }
+  $script:WorkerRs[$Name] = $rs
+  return $rs
+}
+
+function script:Register-WorkerBody {
+  param($Worker, [string]$Name, [scriptblock]$ScriptBlock)
+  $rs = Get-WorkerRunspace -Name $Name
+  $Worker.add_DoWork([WorkerBridge]::MakeDoWork($rs, $ScriptBlock.ToString()))
+}
+#endregion
+
 #region 扫描引擎（高性能目录大小 + size-cache）
 $script:SizeCache = @{}   # id -> bytes
 
@@ -273,8 +361,9 @@ function Get-ItemSize {
         if ($Item.method -eq 'delete-file') {
           if (Test-Path -LiteralPath $p -PathType Leaf) { $total += ([IO.FileInfo]::new($p)).Length }
         } else {
-          $item = Get-Item -LiteralPath $p -Force
-          if ($item -and ($item.Attributes -band [IO.FileAttributes]::Directory)) { $total += Measure-DirBytes $p }
+          # 注意：不能用 $item（与参数 $Item 大小写碰撞，会把参数覆盖成 FileInfo）
+          $fsItem = Get-Item -LiteralPath $p -Force
+          if ($fsItem -and ($fsItem.Attributes -band [IO.FileAttributes]::Directory)) { $total += Measure-DirBytes $p }
         }
       } catch { }
     }
@@ -621,13 +710,15 @@ function New-LargeFilesPage {
 
   $script:LfWorker = New-Object System.ComponentModel.BackgroundWorker
   $script:LfWorker.WorkerSupportsCancellation = $true
-  $script:LfWorker.add_DoWork({
+  $script:LfWorker.WorkerReportsProgress = $true
+  $lfDoWork = {
     param($s, $e)
     $a = $e.Argument
     $list = Get-LargeFiles -Root $a.Root -Threshold $a.Threshold -W $s
     if ($s.CancellationPending) { $e.Cancel = $true; return }
     $e.Result = $list
-  })
+  }
+  Register-WorkerBody -Worker $script:LfWorker -Name 'Lf' -ScriptBlock $lfDoWork
   $script:LfWorker.add_ProgressChanged({
     param($s, $e)
     $script:LblL.Text = [string]$e.UserState
@@ -788,7 +879,7 @@ function New-SoftwarePage {
   }
 
   $script:SoftWorker = New-Object System.ComponentModel.BackgroundWorker
-  $script:SoftWorker.add_DoWork({
+  $softDoWork = {
     param($s, $e)
     $row = $e.Argument
     $bytes = 0L
@@ -796,7 +887,8 @@ function New-SoftwarePage {
       try { $bytes = Measure-DirBytes $row.Location } catch { $bytes = 0L }
     }
     $e.Result = @{ Row = $row; Bytes = $bytes }
-  })
+  }
+  Register-WorkerBody -Worker $script:SoftWorker -Name 'Soft' -ScriptBlock $softDoWork
   $script:SoftWorker.add_RunWorkerCompleted({
     param($s, $e)
     $script:BtnSoftReal.Enabled = $true
@@ -975,12 +1067,14 @@ function New-DupeFilesPage {
 
   $script:DupWorker = New-Object System.ComponentModel.BackgroundWorker
   $script:DupWorker.WorkerSupportsCancellation = $true
-  $script:DupWorker.add_DoWork({
+  $script:DupWorker.WorkerReportsProgress = $true
+  $dupDoWork = {
     param($s, $e)
     $groups = Get-DupeGroups -Root ([string]$e.Argument) -W $s
     if ($s.CancellationPending) { $e.Cancel = $true; return }
     $e.Result = $groups
-  })
+  }
+  Register-WorkerBody -Worker $script:DupWorker -Name 'Dup' -ScriptBlock $dupDoWork
   $script:DupWorker.add_ProgressChanged({
     param($s, $e)
     $script:ProgD.Value = [Math]::Min(100, $e.ProgressPercentage)
@@ -1583,7 +1677,8 @@ function New-MainWindow {
   # ===== 扫描 worker =====
   $script:ScanWorker = New-Object System.ComponentModel.BackgroundWorker
   $script:ScanWorker.WorkerReportsProgress = $true
-  $script:ScanWorker.add_DoWork({
+  $script:ScanWorker.WorkerSupportsCancellation = $true
+  $scanDoWork = {
     param($s, $e)
     $items = Load-CleanupItems
     $rows = New-Object System.Collections.Generic.List[object]
@@ -1596,7 +1691,8 @@ function New-MainWindow {
       $s.ReportProgress([int](100.0 * $n / $items.Count), $it.name)
     }
     $e.Result = @{ Rows = $rows }
-  })
+  }
+  Register-WorkerBody -Worker $script:ScanWorker -Name 'Scan' -ScriptBlock $scanDoWork
   $script:ScanWorker.add_ProgressChanged({
     param($s, $e)
     $script:DiskBar.Value = [Math]::Min(100, $e.ProgressPercentage)
@@ -1660,7 +1756,8 @@ function New-MainWindow {
   # ===== 清理 worker =====
   $script:CleanWorker = New-Object System.ComponentModel.BackgroundWorker
   $script:CleanWorker.WorkerSupportsCancellation = $true
-  $script:CleanWorker.add_DoWork({
+  $script:CleanWorker.WorkerReportsProgress = $true
+  $cleanDoWork = {
     param($s, $e)
     $arg = $e.Argument
     $mode = $arg.Mode
@@ -1676,7 +1773,8 @@ function New-MainWindow {
       $s.ReportProgress([int](100.0 * $done / $arg.Items.Count), ('{0}  释放 {1}' -f $it.name, (Format-Bytes $r.Released)))
     }
     $e.Result = @{ Planned = $totalPlanned; Released = $totalReleased; Skipped = $skippedTotal }
-  })
+  }
+  Register-WorkerBody -Worker $script:CleanWorker -Name 'Clean' -ScriptBlock $cleanDoWork
   $script:CleanWorker.add_ProgressChanged({
     param($s, $e)
     $script:CleanBar.Value = [Math]::Min(100, $e.ProgressPercentage)
