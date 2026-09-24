@@ -532,8 +532,12 @@ function Measure-DirBytes {
 function Save-SizeCache {
   try {
     $obj = [ordered]@{}
-    foreach ($k in $script:SizeCache.Keys) { $obj[$k] = $script:SizeCache[$k] }
-    $json = $obj | ConvertTo-Json
+    foreach ($k in $script:SizeCache.Keys) {
+      $v = $script:SizeCache[$k]
+      if ($v -is [hashtable]) { $obj[$k] = @{ b = [long]$v.b; t = [long]$v.t } }
+      else { $obj[$k] = @{ b = [long]$v; t = -1L } }   # 旧格式兜底
+    }
+    $json = $obj | ConvertTo-Json -Depth 4
     [IO.File]::WriteAllText((Join-Path $script:DataDir 'size-cache.json'), $json, [Text.UTF8Encoding]::new($false))
   } catch { }
 }
@@ -544,15 +548,52 @@ function Load-SizeCache {
     $p = Join-Path $script:DataDir 'size-cache.json'
     if (Test-Path $p) {
       $o = Get-Content -Raw -Encoding UTF8 $p | ConvertFrom-Json
-      foreach ($prop in $o.PSObject.Properties) { $script:SizeCache[$prop.Name] = [long]$prop.Value }
+      foreach ($prop in $o.PSObject.Properties) {
+        $v = $prop.Value
+        if ($v -is [pscustomobject]) {
+          # 新格式 {b:字节, t:时间戳}；字段用 PSObject.Properties 访问避免 StrictMode 抛异常
+          $b = 0L; $t = -1L
+          $bp = $v.PSObject.Properties['b']; if ($bp) { $b = [long]$bp.Value }
+          $tp = $v.PSObject.Properties['t']; if ($tp) { $t = [long]$tp.Value }
+          $script:SizeCache[$prop.Name] = @{ b = $b; t = $t }
+        } else {
+          # 旧格式平铺数字 → t=-1 保证首次扫描强制重测并升级为新格式
+          $script:SizeCache[$prop.Name] = @{ b = [long]$v; t = -1L }
+        }
+      }
     }
   } catch { }
+}
+# 启动即加载磁盘缓存（此前 Load-SizeCache 只定义未调用，跨会话缓存从未生效——v1.2.0 修复）
+Load-SizeCache
+
+function Get-ItemStamp {
+  # 清理项所有展开根路径的时间戳指纹：任一目录 LastWriteTimeUtc 变化 → 缓存失效重测
+  param($Item)
+  $stamp = 0L
+  foreach ($raw in $Item.paths) {
+    foreach ($p in (Get-ExpandedPaths $raw)) {
+      try {
+        $fsItem = Get-Item -LiteralPath $p -Force -ErrorAction SilentlyContinue
+        if ($fsItem) {
+          $t = $fsItem.LastWriteTimeUtc.Ticks
+          if ($t -gt $stamp) { $stamp = $t }
+        }
+      } catch { }
+    }
+  }
+  return $stamp
 }
 
 function Get-ItemSize {
   param($Item, [switch]$Force)
   if ($Item.method -eq 'exec') { return 0L }
-  if (-not $Force -and $script:SizeCache.ContainsKey($Item.id)) { return $script:SizeCache[$Item.id] }
+  $stamp = Get-ItemStamp $Item
+  if (-not $Force -and $script:SizeCache.ContainsKey($Item.id)) {
+    $ent = $script:SizeCache[$Item.id]
+    # 只有新格式 hashtable 且时间戳指纹一致才命中；旧格式/标量/时间戳变化 → 重测
+    if ($ent -is [hashtable] -and $ent.t -eq $stamp) { return [long]$ent.b }
+  }
   $total = 0L
   foreach ($raw in $Item.paths) {
     foreach ($p in (Get-ExpandedPaths $raw)) {
@@ -568,7 +609,7 @@ function Get-ItemSize {
       } catch { }
     }
   }
-  $script:SizeCache[$Item.id] = $total
+  $script:SizeCache[$Item.id] = @{ b = $total; t = $stamp }
   return $total
 }
 #endregion
