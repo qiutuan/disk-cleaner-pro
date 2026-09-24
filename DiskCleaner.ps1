@@ -2652,41 +2652,80 @@ function New-MainWindow {
     Write-CleanLog $Msg
   }
 
-  # ============ 主 TabControl ============
+  # ============ 左侧导航（现代应用风格：竖排侧边栏替代顶部页签） ============
   $tabs = New-Object System.Windows.Forms.TabControl
   $tabs.Dock = 'Fill'
   # 先按设计宽度设置：其下所有 TabPage 在加入前都能按真实宽度布局，锚定子控件不会按默认 200 宽算错
   $tabs.Width = $f.ClientSize.Width
-  # 自绘页签头：选中页白底 + 顶部橙色下划线高亮，未选中浅橙灰字（Win11 风格）
-  $tabs.DrawMode = 'OwnerDrawFixed'
+  $tabs.Alignment = 'Left'
   $tabs.SizeMode = 'Fixed'
-  $tabs.ItemSize = New-Object System.Drawing.Size(112, 32)
+  $tabs.ItemSize = New-Object System.Drawing.Size(168, 44)
+  $tabs.Multiline = $true
+  $tabs.DrawMode = 'OwnerDrawFixed'
+  $tabs.BackColor = [System.Drawing.ColorTranslator]::FromHtml($script:Theme.NavBg)
+  # 悬停高亮跟踪（自绘无原生热态，MouseMove 记录悬停项并重绘）
+  $script:NavHover = -1
+  $tabs.add_MouseMove({
+    param($s, $e)
+    try {
+      $tc = [System.Windows.Forms.TabControl]$s
+      $idx = -1
+      if ($e.X -lt $tc.ItemSize.Width) {
+        $idx = [int][Math]::Floor($e.Y / $tc.ItemSize.Height)
+        if ($idx -lt 0 -or $idx -ge $tc.TabPages.Count) { $idx = -1 }
+      }
+      if ($idx -ne $script:NavHover) { $script:NavHover = $idx; $tc.Invalidate() }
+    } catch { }
+  })
+  $tabs.add_MouseLeave({
+    param($s, $e)
+    try { if ($script:NavHover -ne -1) { $script:NavHover = -1; $s.Invalidate() } } catch { }
+  })
   $tabs.add_DrawItem({
     param($s, $e)
-    $tc = [System.Windows.Forms.TabControl]$s
-    $idx = $e.Index
-    $rect = $tc.GetTabRect($idx)
-    $sel = ($idx -eq $tc.SelectedIndex)
-    $g = $e.Graphics
-    $g.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
-    $back = if ($sel) { [System.Drawing.Color]::White } else { [System.Drawing.ColorTranslator]::FromHtml('#FBE7CC') }
-    $brush = New-Object System.Drawing.SolidBrush($back)
-    $g.FillRectangle($brush, $rect)
-    $brush.Dispose()
-    if ($sel) {
-      $barBrush = New-Object System.Drawing.SolidBrush([System.Drawing.ColorTranslator]::FromHtml($script:Theme.Primary))
-      $g.FillRectangle($barBrush, $rect.X, $rect.Y + 2, $rect.Width, 3)
-      $barBrush.Dispose()
-    }
-    $txtColor = if ($sel) { [System.Drawing.ColorTranslator]::FromHtml($script:Theme.Primary) } else { [System.Drawing.ColorTranslator]::FromHtml('#9E9E9E') }
-    $font = if ($sel) { New-Object System.Drawing.Font($script:Theme.FontUi, 10, [System.Drawing.FontStyle]::Bold) } else { New-Object System.Drawing.Font($script:Theme.FontUi, 10) }
-    $fmt = New-Object System.Drawing.StringFormat
-    $fmt.Alignment = [System.Drawing.StringAlignment]::Center
-    $fmt.LineAlignment = [System.Drawing.StringAlignment]::Center
-    $textBrush = New-Object System.Drawing.SolidBrush($txtColor)
-    $rectF = New-Object System.Drawing.RectangleF($rect.X, $rect.Y, $rect.Width, $rect.Height)
-    $g.DrawString($tc.TabPages[$idx].Text, $font, $textBrush, $rectF, $fmt)
-    $textBrush.Dispose(); $fmt.Dispose(); $font.Dispose()
+    try {
+      $tc = [System.Windows.Forms.TabControl]$s
+      $idx = $e.Index
+      $rect = $tc.GetTabRect($idx)
+      $sel = ($idx -eq $tc.SelectedIndex)
+      $hov = ($idx -eq $script:NavHover)
+      $g = $e.Graphics
+      $g.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
+      # 底色：未选中铺导航条色；悬停浅灰胶囊；选中白色圆角胶囊 + 左侧橙色竖条
+      if ($sel -or $hov) {
+        $r = [System.Drawing.Rectangle]::FromLTRB($rect.X + 4, $rect.Y + 4, $rect.Right - 4, $rect.Bottom - 4)
+        $rad = 8
+        $gp = New-Object System.Drawing.Drawing2D.GraphicsPath
+        $gp.AddArc($r.X, $r.Y, $rad * 2, $rad * 2, 180, 90)
+        $gp.AddArc($r.Right - $rad * 2, $r.Y, $rad * 2, $rad * 2, 270, 90)
+        $gp.AddArc($r.Right - $rad * 2, $r.Bottom - $rad * 2, $rad * 2, $rad * 2, 0, 90)
+        $gp.AddArc($r.X, $r.Bottom - $rad * 2, $rad * 2, $rad * 2, 90, 90)
+        $gp.CloseFigure()
+        $fill = if ($sel) { [System.Drawing.Color]::White } else { [System.Drawing.ColorTranslator]::FromHtml($script:Theme.NavHover) }
+        $brush = New-Object System.Drawing.SolidBrush($fill)
+        $g.FillPath($brush, $gp)
+        $brush.Dispose()
+        if ($sel) {
+          $barBrush = New-Object System.Drawing.SolidBrush([System.Drawing.ColorTranslator]::FromHtml($script:Theme.Primary))
+          $g.FillRectangle($barBrush, $r.X, $r.Y + 6, 3, $r.Height - 12)
+          $barBrush.Dispose()
+        }
+        $gp.Dispose()
+      } else {
+        $brush = New-Object System.Drawing.SolidBrush([System.Drawing.ColorTranslator]::FromHtml($script:Theme.NavBg))
+        $g.FillRectangle($brush, $rect)
+        $brush.Dispose()
+      }
+      $txtColor = if ($sel) { [System.Drawing.ColorTranslator]::FromHtml($script:Theme.Text) } else { [System.Drawing.ColorTranslator]::FromHtml('#5B6470') }
+      $font = if ($sel) { New-Object System.Drawing.Font($script:Theme.FontUi, 10, [System.Drawing.FontStyle]::Bold) } else { New-Object System.Drawing.Font($script:Theme.FontUi, 10) }
+      $fmt = New-Object System.Drawing.StringFormat
+      $fmt.Alignment = [System.Drawing.StringAlignment]::Center
+      $fmt.LineAlignment = [System.Drawing.StringAlignment]::Center
+      $textBrush = New-Object System.Drawing.SolidBrush($txtColor)
+      $rectF = New-Object System.Drawing.RectangleF($rect.X, $rect.Y, $rect.Width, $rect.Height)
+      $g.DrawString($tc.TabPages[$idx].Text, $font, $textBrush, $rectF, $fmt)
+      $textBrush.Dispose(); $fmt.Dispose(); $font.Dispose()
+    } catch { }
   })
 
   # ===== Tab1 缓存清理 =====
