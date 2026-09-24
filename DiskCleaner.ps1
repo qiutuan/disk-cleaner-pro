@@ -2791,6 +2791,7 @@ function New-MainWindow {
         'system'  { '系统' }
         'browser' { '浏览器' }
         'dev'     { '开发工具' }
+        'privacy' { '隐私清理' }
         default   { '常用软件' }
       }
       if (-not $groups.ContainsKey($catKey)) {

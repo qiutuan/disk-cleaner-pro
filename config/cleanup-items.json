@@ -594,5 +594,35 @@
     "defaultChecked": false,
     "method": "delete-dir",
     "detect": { "type": "path-exists", "value": ["%LOCALAPPDATA%\\EBWebView"] }
+  },
+  {
+    "id": "privacy_recent",
+    "category": "privacy",
+    "name": "最近使用文档记录",
+    "desc": "资源管理器\"最近使用的文件\"快捷方式记录，删除后历史列表清空",
+    "paths": ["%APPDATA%\\Microsoft\\Windows\\Recent\\*.lnk"],
+    "risk": "yellow",
+    "defaultChecked": false,
+    "method": "delete-file"
+  },
+  {
+    "id": "privacy_jumplists",
+    "category": "privacy",
+    "name": "任务栏跳转列表",
+    "desc": "任务栏右键\"常用\"跳转列表记录（AutomaticDestinations/CustomDestinations），删除后跳转列表清空",
+    "paths": ["%APPDATA%\\Microsoft\\Windows\\Recent\\AutomaticDestinations", "%APPDATA%\\Microsoft\\Windows\\Recent\\CustomDestinations"],
+    "risk": "yellow",
+    "defaultChecked": false,
+    "method": "delete-dir"
+  },
+  {
+    "id": "privacy_pshistory",
+    "category": "privacy",
+    "name": "PowerShell 控制台历史",
+    "desc": "PSReadLine 保存的 PowerShell 命令历史（可能含密码/令牌等敏感输入），删除后历史清空",
+    "paths": ["%APPDATA%\\Microsoft\\Windows\\PowerShell\\PSReadLine\\ConsoleHost_history.txt"],
+    "risk": "yellow",
+    "defaultChecked": false,
+    "method": "delete-file"
   }
 ]
