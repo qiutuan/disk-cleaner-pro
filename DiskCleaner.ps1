@@ -2940,9 +2940,10 @@ function New-MainWindow {
     $arg = $e.Argument
     $mode = $arg.Mode
     $totalPlanned = 0L; $totalReleased = 0L; $skippedTotal = 0; $done = 0
+    $cancelled = $false
     $rows = New-Object System.Collections.Generic.List[object]
     foreach ($it in $arg.Items) {
-      if ($s.CancellationPending) { $e.Cancel = $true; break }
+      if ($s.CancellationPending) { $cancelled = $true; break }
       $planned = Get-ItemSize $it -Force
       $r = Invoke-SafeDelete $it $mode
       $totalPlanned += [long]$planned
@@ -2959,7 +2960,9 @@ function New-MainWindow {
       $done++
       $s.ReportProgress([int](100.0 * $done / $arg.Items.Count), ('{0}  释放 {1}' -f $it.name, (Format-Bytes $r.Released)))
     }
-    $e.Result = @{ Planned = $totalPlanned; Released = $totalReleased; Skipped = $skippedTotal; Details = $rows }
+    # 注意：不设置 $e.Cancel —— WinForms 在 Cancelled=true 时访问 e.Result 会抛异常，
+    # 取消标志随 Result 一起带回（Cancelled 字段），保证"取消也导出已完成部分"的报告路径可用
+    $e.Result = @{ Planned = $totalPlanned; Released = $totalReleased; Skipped = $skippedTotal; Details = $rows; Cancelled = $cancelled }
   }
   Register-WorkerBody -Worker $script:CleanWorker -Name 'Clean' -ScriptBlock $cleanDoWork
   $script:CleanWorker.add_ProgressChanged({
@@ -2980,18 +2983,16 @@ function New-MainWindow {
       Log-Line ('清理出错: ' + $e.Error.Message)
       return
     }
-    if ($e.Cancelled) {
+    # 取消标志由 DoWork 放在 Result.Cancelled 里带回：Cancelled=true 时访问 e.Result 会抛异常
+    try { $res = $e.Result } catch { return }
+    if ($res.Cancelled) {
       $script:CleanStatus.Text = '已取消'
       Log-Line '清理已取消（已完成部分保留）'
-      try {
-        $res2 = $e.Result
-        if ($res2 -and $res2.Details) {
-          $rep2 = Export-CleanReport -Details $res2.Details -Planned $res2.Planned -Released $res2.Released -Skipped $res2.Skipped -Mode $script:Settings.DeleteMode -Note '已取消，仅含完成部分'
-          if ($rep2) { Log-Line ('清理报告已导出: ' + $rep2) }
-        }
-      } catch { }
+      if ($res.Details -and $res.Details.Count -gt 0) {
+        $rep2 = Export-CleanReport -Details $res.Details -Planned $res.Planned -Released $res.Released -Skipped $res.Skipped -Mode $script:Settings.DeleteMode -Note '已取消，仅含完成部分'
+        if ($rep2) { Log-Line ('清理报告已导出: ' + $rep2) }
+      }
     } else {
-      $res = $e.Result
       $script:CleanStatus.Text = '清理完成'
       Log-Line ('清理完成: 计划释放 ' + (Format-Bytes $res.Planned) + ' / 实际释放 ' + (Format-Bytes $res.Released) + ' / 跳过 ' + $res.Skipped)
       # 自动导出清理报告（含已取消时的已完成部分）
