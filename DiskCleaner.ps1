@@ -845,6 +845,21 @@ function Get-FileHashSha256 {
   } catch { return $null }
 }
 
+function Get-FileHashSha256Partial {
+  # 首 64KB 部分哈希：重复检测预筛用（大文件先比头部，避免对每个候选全量读盘）
+  param([string]$Path)
+  try {
+    $fs = [IO.File]::OpenRead($Path)
+    try {
+      $len = [Math]::Min(65536L, $fs.Length)
+      $buf = New-Object byte[] $len
+      $null = $fs.Read($buf, 0, $len)
+      $sha = [Security.Cryptography.SHA256]::Create()
+      try { return [BitConverter]::ToString($sha.ComputeHash($buf)).Replace('-', '') } finally { $sha.Dispose() }
+    } finally { $fs.Dispose() }
+  } catch { return $null }
+}
+
 # ---------- Tab: 大文件分析 ----------
 function Get-LargeFiles {
   # 迭代(栈)遍历目标盘，收集 >= 阈值的文件；跳过重解析点与系统巨型目录
@@ -858,7 +873,7 @@ function Get-LargeFiles {
     if ($W -and $W.CancellationPending) { return $result }
     $dir = $stack.Pop()
     try {
-      $di = Get-Item -LiteralPath $dir -Force -ErrorAction Stop
+      $di = [IO.DirectoryInfo]::new($dir)
       if ($di.Attributes -band [IO.FileAttributes]::ReparsePoint) { continue }
       if ($skipNames -contains $di.Name) { continue }
       foreach ($f in [IO.Directory]::EnumerateFiles($dir)) {
@@ -1194,7 +1209,7 @@ function Get-DupeGroups {
     if ($W -and $W.CancellationPending) { return $null }
     $dir = $stack.Pop()
     try {
-      $di = Get-Item -LiteralPath $dir -Force -ErrorAction Stop
+      $di = [IO.DirectoryInfo]::new($dir)
       if ($di.Attributes -band [IO.FileAttributes]::ReparsePoint) { continue }
       foreach ($f in [IO.Directory]::EnumerateFiles($dir)) {
         try {
@@ -1210,27 +1225,41 @@ function Get-DupeGroups {
       foreach ($d in [IO.Directory]::EnumerateDirectories($dir)) { $stack.Push($d) }
     } catch { }
   }
-  # 仅保留"同大小出现>=2"的候选
-  $candidates = New-Object System.Collections.Generic.List[string]
-  foreach ($k in @($bySize.Keys)) { if ($bySize[$k].Count -ge 2) { $candidates.AddRange($bySize[$k]) } }
-  $bySize = $null
-  # 哈希
-  $hashMap = @{}
+  # 阶段1：首 64KB 头部哈希预筛（dupeGuru 同款两级策略：同大小 → 比头部 → 只对头部相同者做全量哈希）
+  $fullJobs = New-Object System.Collections.Generic.List[object]   # @{ Paths=List[string]; Size=long }
   $i = 0
-  foreach ($f in $candidates) {
-    if ($W -and $W.CancellationPending) { return $null }
-    $h = Get-FileHashSha256 $f
-    if ($h) { $hashMap[$f] = $h }
-    $i++
-    if (($i % 50) -eq 0 -and $W -and $candidates.Count -gt 0) {
-      $W.ReportProgress([int](100.0 * $i / $candidates.Count), ("哈希 {0}/{1}" -f $i, $candidates.Count))
+  foreach ($k in @($bySize.Keys)) {
+    $bucket = $bySize[$k]
+    if ($bucket.Count -lt 2) { continue }
+    $partMap = @{}
+    foreach ($f in $bucket) {
+      if ($W -and $W.CancellationPending) { return $null }
+      $ph = Get-FileHashSha256Partial $f
+      if (-not $ph) { continue }
+      $key = [string]$k + '|' + $ph
+      if (-not $partMap.ContainsKey($key)) { $partMap[$key] = New-Object System.Collections.Generic.List[string] }
+      $null = $partMap[$key].Add($f)
+      $i++
+      if (($i % 100) -eq 0 -and $W) { $W.ReportProgress(0, ("头部比对 {0}..." -f $i)) }
+    }
+    foreach ($lst in $partMap.Values) {
+      if ($lst.Count -ge 2) { $fullJobs.Add([pscustomobject]@{ Paths = $lst; Size = $k }) }
     }
   }
+  $bySize = $null
+  # 阶段2：仅对头部相同的组做全量 SHA-256
   $byHash = @{}
-  foreach ($f in $hashMap.Keys) {
-    $h = $hashMap[$f]
-    if (-not $byHash.ContainsKey($h)) { $byHash[$h] = New-Object System.Collections.Generic.List[string] }
-    $byHash[$h].Add($f)
+  $i = 0
+  foreach ($job in $fullJobs) {
+    foreach ($f in $job.Paths) {
+      if ($W -and $W.CancellationPending) { return $null }
+      $h = Get-FileHashSha256 $f
+      if (-not $h) { continue }
+      if (-not $byHash.ContainsKey($h)) { $byHash[$h] = New-Object System.Collections.Generic.List[string] }
+      $null = $byHash[$h].Add($f)
+      $i++
+      if (($i % 50) -eq 0 -and $W) { $W.ReportProgress(0, ("全量哈希 {0}..." -f $i)) }
+    }
   }
   $result = New-Object System.Collections.Generic.List[object]
   $g = 0
