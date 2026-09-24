@@ -505,22 +505,27 @@ function script:Register-WorkerBody {
 $script:SizeCache = @{}   # id -> bytes
 
 function Measure-DirBytes {
+  # 迭代（栈）遍历：消除 PowerShell 深递归的函数调用开销，且深路径不会栈溢出；
+  # 跳过重解析点（Junction）防死循环；逐目录 try/catch 降级
   param([string]$Root)
   $total = 0L
   if (-not (Test-Path -LiteralPath $Root)) { return 0L }
-  try {
-    foreach ($f in [IO.Directory]::EnumerateFiles($Root)) {
-      try { $total += ([IO.FileInfo]::new($f)).Length } catch { }
-    }
-    foreach ($d in [IO.Directory]::EnumerateDirectories($Root)) {
-      try {
-        $di = Get-Item -LiteralPath $d -Force
-        if ($di.Attributes -band [IO.FileAttributes]::ReparsePoint) { continue }  # 跳过 Junction 防死循环
-        $total += Measure-DirBytes $d
-      } catch { }
-    }
-  } catch [System.UnauthorizedAccessException] { }
-  catch { }
+  $stack = New-Object System.Collections.Generic.Stack[string]
+  $stack.Push($Root)
+  while ($stack.Count -gt 0) {
+    $dir = $stack.Pop()
+    try {
+      foreach ($f in [IO.Directory]::EnumerateFiles($dir)) {
+        try { $total += ([IO.FileInfo]::new($f)).Length } catch { }
+      }
+      foreach ($d in [IO.Directory]::EnumerateDirectories($dir)) {
+        try {
+          if (([IO.DirectoryInfo]::new($d)).Attributes -band [IO.FileAttributes]::ReparsePoint) { continue }
+          $stack.Push($d)
+        } catch { }
+      }
+    } catch { }   # 无权限/占用 → 跳过该目录继续
+  }
   return $total
 }
 
