@@ -594,6 +594,8 @@ function Measure-DirBytes {
   param([string]$Root)
   $total = 0L
   if (-not (Test-Path -LiteralPath $Root)) { return 0L }
+  # 根自身是重解析点 → 其"内容"不属于它，直接按 0 处理（防透过 Junction 统计目标）
+  try { if ([IO.DirectoryInfo]::new($Root).Attributes -band [IO.FileAttributes]::ReparsePoint) { return 0L } } catch { }
   $stack = New-Object System.Collections.Generic.Stack[string]
   $stack.Push($Root)
   while ($stack.Count -gt 0) {
@@ -702,6 +704,19 @@ function Get-ItemSize {
 function Remove-DirContents {
   # 保留根目录、删除全部子项；返回实际释放字节
   param([string]$Dir, [string]$Mode)
+  # 根自身是重解析点 → 只删链接本身，绝不枚举进链接目标（防止清空真实目标内容）
+  try {
+    if ([IO.DirectoryInfo]::new($Dir).Attributes -band [IO.FileAttributes]::ReparsePoint) {
+      try {
+        if ($Mode -eq 'Recycle') {
+          [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteDirectory($Dir, 'OnlyErrorDialogs', 'SendToRecycleBin', 'ThrowException')
+        } else {
+          [IO.Directory]::Delete($Dir, $false)
+        }
+      } catch { }
+      return 0L
+    }
+  } catch { }
   $released = 0L
   foreach ($f in [IO.Directory]::EnumerateFiles($Dir)) {
     try {
@@ -715,6 +730,19 @@ function Remove-DirContents {
     } catch { }   # 占用/权限失败 → 自动跳过
   }
   foreach ($d in [IO.Directory]::EnumerateDirectories($Dir)) {
+    # 重解析点子目录（Junction/符号链接）：只删链接本身，不测大小、不递归、不枚举目标
+    $isReparse = $false
+    try { $isReparse = ([IO.DirectoryInfo]::new($d).Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 } catch { }
+    if ($isReparse) {
+      try {
+        if ($Mode -eq 'Recycle') {
+          [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteDirectory($d, 'OnlyErrorDialogs', 'SendToRecycleBin', 'ThrowException')
+        } else {
+          [IO.Directory]::Delete($d, $false)
+        }
+      } catch { }
+      continue
+    }
     $sz = Measure-DirBytes $d
     try {
       if ($Mode -eq 'Recycle') {
