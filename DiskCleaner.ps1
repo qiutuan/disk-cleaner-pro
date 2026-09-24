@@ -1,6 +1,8 @@
-﻿# ============================================================
+# ============================================================
 #  DiskCleanerPro - C 盘智能清理工具
 #  PowerShell + WPF（Fluent 浅色主题，纯代码绘制，无图片资源）
+#  引擎层：Engine.psm1（扫描/白名单/删除/缓存/附加功能数据函数）
+#  UI 层：本文件（主题/页面/主窗口/自测/入口）
 #  启动：启动清理工具.bat（pwsh -STA 优先，PS5.1 兜底）
 #  写入边界：所有运行时数据仅写入本目录 runtime\ 内
 # ============================================================
@@ -16,6 +18,16 @@ $OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($f
 $script:ToolRoot = $PSScriptRoot
 $script:DataDir  = Join-Path $script:ToolRoot 'runtime'
 $script:LogDir   = Join-Path $script:DataDir 'logs'
+
+# 引擎模块：worker runspace 与主会话共用同一份 Engine.psm1（取代整文件源码注入）
+$script:EngineModule = Join-Path $script:ToolRoot 'Engine.psm1'
+if (Test-Path -LiteralPath $script:EngineModule) {
+  Import-Module $script:EngineModule -Force
+} else {
+  Write-Host "缺少引擎模块: $script:EngineModule" -ForegroundColor Red
+  exit 1
+}
+[void](Initialize-Engine)   # 引擎侧路径就绪 + 加载磁盘 size 缓存
 #endregion
 
 #region 主题色板（无图片资源，纯代码着色）
@@ -40,20 +52,7 @@ $script:Theme = @{
 }
 #endregion
 
-#region 日志
-function Write-CleanLog {
-  param([string]$Message)
-  try {
-    if (-not (Test-Path $script:LogDir)) {
-      New-Item -ItemType Directory -Force -Path $script:LogDir | Out-Null
-    }
-    $line = '{0}  {1}' -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $Message
-    Add-Content -LiteralPath (Join-Path $script:LogDir 'cleanup.log') -Value $line -Encoding UTF8
-  } catch { }
-}
-#endregion
-
-#region 程序集加载（引擎与 UI 共用，须在异常兜底之前）
+#region 程序集加载（UI 程序集；引擎模块内部自加载所需程序集）
 Add-Type -AssemblyName System.Drawing
 Add-Type -AssemblyName Microsoft.VisualBasic   # 回收站删除 API
 Add-Type -AssemblyName PresentationFramework    # WPF 界面（v1.3.0）
@@ -69,541 +68,77 @@ Add-Type -AssemblyName System.Xaml
 })
 #endregion
 
-#region 路径工具（环境变量 + 通配符展开）
-function Expand-EnvPath {
-  param([string]$Path)
-  if (-not $Path) { return $Path }
-  $r = [Environment]::ExpandEnvironmentVariables($Path)
-  # 兼容 $env:VAR 写法
-  $r = [regex]::Replace($r, '\$env:(\w+)', {
-    param($m) [Environment]::GetEnvironmentVariable($m.Groups[1].Value)
-  })
-  return $r
-}
 
-function Get-ExpandedPaths {
-  # 支持多级通配符：%LOCALAPPDATA%\JetBrains\*\log → 逐段展开存在的子目录
-  param([string]$Raw)
-  $expanded = Expand-EnvPath $Raw
-  if (-not $expanded) { return @() }
-  if ($expanded -notmatch '[\*\?]') { return @($expanded) }
 
-  $trimmed = $expanded.TrimEnd('\')
-  $parts = $trimmed -split '[\\/]' | Where-Object { $_ -ne '' }
-  # 找不含通配符的最长字面前缀作为起点
-  $base = ''; $restIdx = $parts.Count
-  for ($i = 0; $i -lt $parts.Count; $i++) {
-    if ($parts[$i] -match '[\*\?]') { $restIdx = $i; break }
-    if ($base -eq '') {
-      $base = if ($parts[$i] -match '^[A-Za-z]:$') { $parts[$i] + '\' } else { $parts[$i] }
-    } else {
-      $base = Join-Path $base $parts[$i]
-    }
-  }
-  if ($restIdx -ge $parts.Count) { return @($base) }
-  if (-not (Test-Path -LiteralPath $base)) { return @() }
-  $rest = $parts[$restIdx..($parts.Count - 1)]
 
-  function Expand-GlobRec {
-    param([string]$B, [string[]]$S, [int]$i)
-    $out = @()
-    if ($i -ge $S.Count) { return @($B) }
-    $seg = $S[$i]
-    if ($seg -match '[\*\?]') {
-      foreach ($c in (Get-ChildItem -LiteralPath $B -Force -ErrorAction SilentlyContinue)) {
-        if ($c.Name -like $seg) { $out += Expand-GlobRec (Join-Path $B $c.Name) $S ($i + 1) }
-      }
-    } else {
-      $nxt = Join-Path $B $seg
-      if (Test-Path -LiteralPath $nxt) { $out += Expand-GlobRec $nxt $S ($i + 1) }
-    }
-    return $out
-  }
-  $result = @(Expand-GlobRec $base $rest 0 | Where-Object { $_ })
-  return , $result   # 逗号包裹防止单元素被解包成标量，保证 .Count/foreach 始终可用
-}
-#endregion
-
-#region 白名单闸门（安全底线：受保护路径绝对不删）
-# 两层语义：
-#   ProtectedRoots  = 受保护根。目标是根自身或其祖先 → 禁止（防删盘根/用户主目录/WINDIR
-#                     根/ProgramData/ProgramFiles 根/工具自身目录及其祖先链）。
-#                     注意：根的"内部"不在此层拦截，否则用户 Temp 等核心清理项全被误拦。
-#   ForbiddenSubtrees = 禁止子树。目标位于其内部 → 一律禁止（System32/WinSxS/assembly/
-#                     SysWOW64/卷信息/回收站/启动菜单/恢复分区/引导与页面文件等）。
-$script:ProtectedRoots = @(
-  'C:\', 'D:\', 'E:\', 'F:\', 'G:\', 'H:\', 'I:\', 'J:\', 'K:\', 'L:\',
-  "$env:WINDIR", "$env:USERPROFILE",
-  "$env:ProgramFiles", "${env:ProgramFiles(x86)}", "$env:ProgramData"
-)
-$script:ForbiddenSubtrees = @(
-  "$env:WINDIR\System32", "$env:WINDIR\WinSxS",
-  "$env:WINDIR\assembly", "$env:WINDIR\SysWOW64",
-  "$env:SystemDrive\ProgramData\Microsoft\Windows\Start Menu",
-  "$env:SystemDrive\ProgramData\Microsoft\Windows\Recovery",
-  "$env:SystemDrive\System Volume Information",
-  "$env:SystemDrive\Recovery",
-  "$env:SystemDrive\bootmgr",
-  "$env:SystemDrive\pagefile.sys",
-  "$env:SystemDrive\hiberfil.sys",
-  "$env:SystemDrive\swapfile.sys",
-  "$env:SystemDrive\`$Recycle.Bin"
-)
-$script:DynamicWhitelist = @($script:ToolRoot)   # 工具自身目录，防"删到自己"
-
-function Test-Whitelist {
-  param([string]$FullPath)
-  if (-not $FullPath) { return $false }
-  try { $fp = [IO.Path]::GetFullPath($FullPath).TrimEnd('\') + '\' } catch { return $false }
-  # UNC（网络共享）一律禁止：不在本机受控范围内
-  if ($fp.StartsWith('\\')) { return $false }
-  # 任意盘符的盘根一律禁止（C:\..L:\ 已列于 ProtectedRoots，此处兜底覆盖其余盘符/热插拔盘）
-  if ($fp -match '^[A-Za-z]:\\$') { return $false }
-  # 显式放行工具自建的可丢弃测试数据（testdata，仅自测用、无真实数据），
-  # 须在受保护根/禁止子树判断之前短路，否则会被盘根(G:\)等规则拦死
-  $testArea = Join-Path $script:ToolRoot 'testdata'
-  try { $ta = [IO.Path]::GetFullPath($testArea).TrimEnd('\') + '\' } catch { $ta = '' }
-  if ($ta -and $fp.StartsWith($ta, 'OrdinalIgnoreCase')) { return $true }
-  # 规则1：目标是受保护根自身或其祖先（含工具目录祖先链）→ 禁止
-  foreach ($w in ($script:ProtectedRoots + $script:DynamicWhitelist)) {
-    try { $we = [IO.Path]::GetFullPath((Expand-EnvPath $w)).TrimEnd('\') + '\' } catch { continue }
-    if ($we.StartsWith($fp, 'OrdinalIgnoreCase')) { return $false }
-  }
-  # 规则2：目标位于禁止子树内（System32/WinSxS/卷信息/回收站等）→ 一律禁止
-  foreach ($w in $script:ForbiddenSubtrees) {
-    try { $we = [IO.Path]::GetFullPath((Expand-EnvPath $w)).TrimEnd('\') + '\' } catch { continue }
-    if ($fp.StartsWith($we, 'OrdinalIgnoreCase')) { return $false }
-  }
-  return $true
-}
-#endregion
-
-#region 配置加载（内嵌兜底 + 外部 JSON 合并 + detect 筛选）
-# 内嵌最小兜底清单：外部 config\cleanup-items.json 缺失/损坏时使用
-$script:EmbeddedItemsJson = @'
-[
-  { "id":"sys_tmp_user","category":"system","name":"用户临时文件","desc":"临时文件，可安全删除","paths":["%LOCALAPPDATA%\\Temp"],"risk":"green","defaultChecked":true,"method":"delete-dir" },
-  { "id":"sys_tmp_win","category":"system","name":"Windows 临时文件","desc":"系统临时文件","paths":["%WINDIR%\\Temp"],"risk":"green","defaultChecked":true,"method":"delete-dir" },
-  { "id":"sys_crashdump","category":"system","name":"崩溃转储","desc":"应用崩溃转储","paths":["%LOCALAPPDATA%\\CrashDumps"],"risk":"green","defaultChecked":true,"method":"delete-dir" }
-]
-'@
-
-function Test-Detect {
-  param($Detect)
-  if (-not $Detect -or -not $Detect.type) { return $true }
-  switch ($Detect.type) {
-    'path-exists' {
-      foreach ($v in $Detect.value) {
-        if (Test-Path -LiteralPath (Expand-EnvPath $v)) { return $true }
-      }
-      return $false
-    }
-    'command-exists' {
-      foreach ($v in $Detect.value) {
-        if (Get-Command $v -ErrorAction SilentlyContinue) { return $true }
-      }
-      return $false
-    }
-  }
-  return $true
-}
-
-function Load-CleanupItems {
-  $configPath = Join-Path $script:ToolRoot 'config\cleanup-items.json'
-  $items = $null
-  if (Test-Path $configPath) {
-    try {
-      $items = Get-Content -Raw -Encoding UTF8 $configPath | ConvertFrom-Json
-    } catch {
-      Write-CleanLog "配置文件解析失败，回退内嵌默认: $($_.Exception.Message)"
-    }
-  }
-  if (-not $items) {
-    try { $items = $script:EmbeddedItemsJson | ConvertFrom-Json } catch { return @() }
-  }
-  $valid = @()
-  foreach ($it in $items) {
-    if (-not $it.id) { continue }
-    if (-not $it.category) { $it.category = 'app' }
-    if (-not $it.name)  { $it.name = $it.id }
-    if (-not $it.desc)  { $it.desc = '' }
-    if (-not $it.risk)  { $it.risk = 'yellow' }
-    if ($null -eq $it.defaultChecked) { $it.defaultChecked = ($it.risk -eq 'green') }
-    if (-not $it.method) { $it.method = 'delete-dir' }
-    if (-not $it.paths) { $it.paths = @() }
-    # detect 为可选字段，用 PSObject.Properties 访问避免 StrictMode 抛异常
-    $detProp = $it.PSObject.Properties['detect']
-    $detect = if ($detProp) { $detProp.Value } else { $null }
-    if (-not (Test-Detect $detect)) { continue }   # 机器上不存在 → 隐藏
-    $valid += $it
-  }
-  return $valid
-}
-#endregion
-
-#region 后台任务桥接（PS7 runspace 修复）
+#region 后台任务桥接（PS7 runspace 修复 + 引擎模块化，v1.5.0）
 # PS7 下 BackgroundWorker.DoWork 委托的 prologue 在 GetContextFromTLS() 处失败——
-# ThreadPool 线程没有 runspace，脚本连第一行都执行不到（实测注入 DefaultRunspace 也无效，
-# 因为注入行本身也是 PowerShell 语句）。方案：用 C# 桥接委托，在 DoWork 线程上先设好
-# DefaultRunspace，再把脚本交给各自预置的 worker runspace 执行（进度/取消/结果照常封送）。
+# ThreadPool 线程没有 runspace，脚本连第一行都执行不到。方案：C# 桥接委托，在 DoWork
+# 线程上先设好 DefaultRunspace，再把脚本交给 runspace 执行；runspace 首次使用时懒创建
+# （ConcurrentDictionary<string, Lazy<Runspace>> 保证恰好一次），初始化 = Import-Module
+# Engine.psm1，取代旧版"读取自身文件整段注入"（~3700 行源码每 worker 全量解析）。
 Add-Type -AssemblyName System.Management.Automation
 if (-not ('WorkerBridge' -as [type])) {
 Add-Type -TypeDefinition @'
 using System;
+using System.Collections.Concurrent;
+using System.Threading;
 using System.Management.Automation;
 using System.Management.Automation.Runspaces;
 using System.ComponentModel;
 public static class WorkerBridge {
-  public static DoWorkEventHandler MakeDoWork(Runspace rs, string script) {
+  static ConcurrentDictionary<string, Lazy<Runspace>> _pool = new ConcurrentDictionary<string, Lazy<Runspace>>();
+  public static DoWorkEventHandler MakeDoWork(string name, string init, object cache, string script) {
     return delegate(object sender, DoWorkEventArgs e) {
+      Runspace rs = _pool.GetOrAdd(name, n => new Lazy<Runspace>(delegate {
+        var r = RunspaceFactory.CreateRunspace();
+        r.Open();
+        using (var ps = PowerShell.Create()) { ps.Runspace = r; ps.AddScript(init).Invoke(); }
+        return r;
+      }, LazyThreadSafetyMode.ExecutionAndPublication)).Value;
       Runspace.DefaultRunspace = rs;
       using (var ps = PowerShell.Create()) {
         ps.Runspace = rs;
-        ps.AddScript(script).AddArgument(sender).AddArgument(e);
+        ps.AddScript(script).AddArgument(sender).AddArgument(e).AddArgument(cache);
         ps.Invoke();
       }
     };
+  }
+  public static void DisposeAll() {
+    foreach (var kv in _pool) { try { kv.Value.Value.Dispose(); } catch { } }
+    _pool.Clear();
   }
 }
 '@
 }
 
-$script:WorkerRs = @{}          # name -> runspace（每个 worker 独立，避免并发争用）
-$script:WorkerSourceCache = $null
-
-function script:Get-WorkerSource {
-  # 读取自身文件，取 #region 入口 之前的函数/数据段，作为 worker runspace 的初始化源
-  if ($script:WorkerSourceCache) { return $script:WorkerSourceCache }
-  try {
-    $src = Get-Content -Raw -Encoding UTF8 (Join-Path $script:ToolRoot 'DiskCleaner.ps1')
-    # 用"行首锚定"的正则定位入口区标记——不能 IndexOf 字面量（本函数里的 '#region 入口'
-    # 字符串字面量会与标记碰撞，导致把源截断在本函数中途）
-    $m = [regex]::Match($src, '(?m)^#region 入口\s*$')
-    if (-not $m.Success) { throw '入口标记未找到' }
-    $seg = $src.Substring(0, $m.Index)
-    # 剔除 pre-entry 的路径赋值与 param 块（worker 不需要 $SelfTest，且动态注入时它们会失效）
-    $seg = $seg -replace '(?m)^\$script:(ToolRoot|DataDir|LogDir)\s*=.*$', ''
-    $seg = $seg -replace '(?m)^param\s*\(.*$', ''
-    $script:WorkerSourceCache = $seg
-    return $seg
-  } catch {
-    Write-CleanLog ("无法生成 worker 初始化源: $($_.Exception.Message)")
-    return $null
-  }
-}
-
-function script:Get-WorkerRunspace {
-  param([string]$Name)
-  if ($script:WorkerRs.ContainsKey($Name)) { return $script:WorkerRs[$Name] }
-  $src = Get-WorkerSource
-  if (-not $src) { throw "worker[$Name] 初始化源不可用" }
-  $rs = [runspacefactory]::CreateRunspace()
-  $rs.Open()
-  $ps = [powershell]::Create(); $ps.Runspace = $rs
-  try {
-    $tool = $script:ToolRoot.Replace("'", "''")
-    $data = $script:DataDir.Replace("'", "''")
-    $log  = $script:LogDir.Replace("'", "''")
-    $init = "`$script:ToolRoot='$tool'`n`$script:DataDir='$data'`n`$script:LogDir='$log'`n" + $src
-    $null = $ps.AddScript($init).Invoke()
-    # 绑定共享 SizeCache 引用（必须在源之后：源内 line 222 会自建独立 @{}，先跑源再覆盖引用）
-    $null = $ps.AddScript('$script:SizeCache = $args[0]').AddArgument($script:SizeCache).Invoke()
-    $errs = @($ps.Streams.Error)
-    if ($errs.Count -gt 0) {
-      Write-CleanLog ("worker[$Name] 初始化错误 {0} 条（示例: {1}）" -f $errs.Count, $errs[0].ToString())
-    }
-  } catch {
-    $rs.Close(); $rs.Dispose()
-    throw "worker[$Name] 初始化失败: $($_.Exception.Message)"
-  } finally {
-    $ps.Dispose()
-  }
-  $script:WorkerRs[$Name] = $rs
-  return $rs
+$script:WorkerInitCache = $null
+function script:Get-WorkerInit {
+  # 生成 worker runspace 初始化源：仅导入引擎模块（模块编译缓存后远快于整文件注入）
+  if ($script:WorkerInitCache) { return $script:WorkerInitCache }
+  $mod = $script:EngineModule.Replace("'", "''")
+  $script:WorkerInitCache = "Import-Module '$mod' -Force"
+  return $script:WorkerInitCache
 }
 
 function script:Register-WorkerBody {
   param($Worker, [string]$Name, [scriptblock]$ScriptBlock)
-  $rs = Get-WorkerRunspace -Name $Name
-  $Worker.add_DoWork([WorkerBridge]::MakeDoWork($rs, $ScriptBlock.ToString()))
+  $body = $ScriptBlock.ToString()
+  # 剔除原 param($s, $e) 头，由桥接层统一 AddArgument(sender, e, cache)
+  $body = $body -replace '(?s)^\s*param\(\s*\$s\s*,\s*\$e\s*\)\s*', ''
+  $cache = Get-EngineSharedCache
+  $init = Get-WorkerInit
+  $composed = "`$s=`$args[0]; `$e=`$args[1]; Set-EngineSharedCache `$args[2]`n" + $body
+  $Worker.add_DoWork([WorkerBridge]::MakeDoWork($Name, $init, $cache, $composed))
+}
+
+function script:Dispose-WorkerRunspaces {
+  # 窗口关闭时回收全部 worker runspace（释放 runspace 与后台线程）
+  if ('WorkerBridge' -as [type]) { [WorkerBridge]::DisposeAll() }
 }
 #endregion
 
-#region 扫描引擎（高性能目录大小 + size-cache）
-$script:SizeCache = @{}   # id -> bytes
 
-function Measure-DirBytes {
-  # 迭代（栈）遍历：消除 PowerShell 深递归的函数调用开销，且深路径不会栈溢出；
-  # 跳过重解析点（Junction）防死循环；逐目录 try/catch 降级
-  param([string]$Root)
-  $total = 0L
-  if (-not (Test-Path -LiteralPath $Root)) { return 0L }
-  # 根自身是重解析点 → 其"内容"不属于它，直接按 0 处理（防透过 Junction 统计目标）
-  try { if ([IO.DirectoryInfo]::new($Root).Attributes -band [IO.FileAttributes]::ReparsePoint) { return 0L } } catch { }
-  $stack = New-Object System.Collections.Generic.Stack[string]
-  $stack.Push($Root)
-  while ($stack.Count -gt 0) {
-    $dir = $stack.Pop()
-    try {
-      foreach ($f in [IO.Directory]::EnumerateFiles($dir)) {
-        try { $total += ([IO.FileInfo]::new($f)).Length } catch { }
-      }
-      foreach ($d in [IO.Directory]::EnumerateDirectories($dir)) {
-        try {
-          if (([IO.DirectoryInfo]::new($d)).Attributes -band [IO.FileAttributes]::ReparsePoint) { continue }
-          $stack.Push($d)
-        } catch { }
-      }
-    } catch { }   # 无权限/占用 → 跳过该目录继续
-  }
-  return $total
-}
-
-function Save-SizeCache {
-  try {
-    $obj = [ordered]@{}
-    foreach ($k in $script:SizeCache.Keys) {
-      $v = $script:SizeCache[$k]
-      if ($v -is [hashtable]) { $obj[$k] = @{ b = [long]$v.b; t = [long]$v.t } }
-      else { $obj[$k] = @{ b = [long]$v; t = -1L } }   # 旧格式兜底
-    }
-    $json = $obj | ConvertTo-Json -Depth 4
-    [IO.File]::WriteAllText((Join-Path $script:DataDir 'size-cache.json'), $json, [Text.UTF8Encoding]::new($false))
-  } catch { }
-}
-
-function Load-SizeCache {
-  $script:SizeCache = @{}
-  try {
-    $p = Join-Path $script:DataDir 'size-cache.json'
-    if (Test-Path $p) {
-      $o = Get-Content -Raw -Encoding UTF8 $p | ConvertFrom-Json
-      foreach ($prop in $o.PSObject.Properties) {
-        $v = $prop.Value
-        if ($v -is [pscustomobject]) {
-          # 新格式 {b:字节, t:时间戳}；字段用 PSObject.Properties 访问避免 StrictMode 抛异常
-          $b = 0L; $t = -1L
-          $bp = $v.PSObject.Properties['b']; if ($bp) { $b = [long]$bp.Value }
-          $tp = $v.PSObject.Properties['t']; if ($tp) { $t = [long]$tp.Value }
-          $script:SizeCache[$prop.Name] = @{ b = $b; t = $t }
-        } else {
-          # 旧格式平铺数字 → t=-1 保证首次扫描强制重测并升级为新格式
-          $script:SizeCache[$prop.Name] = @{ b = [long]$v; t = -1L }
-        }
-      }
-    }
-  } catch { }
-}
-# 启动即加载磁盘缓存（此前 Load-SizeCache 只定义未调用，跨会话缓存从未生效——v1.2.0 修复）
-Load-SizeCache
-
-function Get-ItemStamp {
-  # 清理项所有展开根路径的时间戳指纹：任一目录 LastWriteTimeUtc 变化 → 缓存失效重测
-  param($Item)
-  $stamp = 0L
-  foreach ($raw in $Item.paths) {
-    foreach ($p in (Get-ExpandedPaths $raw)) {
-      try {
-        $fsItem = Get-Item -LiteralPath $p -Force -ErrorAction SilentlyContinue
-        if ($fsItem) {
-          $t = $fsItem.LastWriteTimeUtc.Ticks
-          if ($t -gt $stamp) { $stamp = $t }
-        }
-      } catch { }
-    }
-  }
-  return $stamp
-}
-
-function Get-ItemSize {
-  param($Item, [switch]$Force)
-  if ($Item.method -eq 'exec') { return 0L }
-  $stamp = Get-ItemStamp $Item
-  if (-not $Force -and $script:SizeCache.ContainsKey($Item.id)) {
-    $ent = $script:SizeCache[$Item.id]
-    # 只有新格式 hashtable 且时间戳指纹一致才命中；旧格式/标量/时间戳变化 → 重测
-    if ($ent -is [hashtable] -and $ent.t -eq $stamp) { return [long]$ent.b }
-  }
-  $total = 0L
-  foreach ($raw in $Item.paths) {
-    foreach ($p in (Get-ExpandedPaths $raw)) {
-      if (-not (Test-Path -LiteralPath $p)) { continue }
-      try {
-        if ($Item.method -eq 'delete-file') {
-          if (Test-Path -LiteralPath $p -PathType Leaf) { $total += ([IO.FileInfo]::new($p)).Length }
-        } else {
-          # 注意：不能用 $item（与参数 $Item 大小写碰撞，会把参数覆盖成 FileInfo）
-          $fsItem = Get-Item -LiteralPath $p -Force
-          if ($fsItem -and ($fsItem.Attributes -band [IO.FileAttributes]::Directory)) { $total += Measure-DirBytes $p }
-        }
-      } catch { }
-    }
-  }
-  $script:SizeCache[$Item.id] = @{ b = $total; t = $stamp }
-  return $total
-}
-#endregion
-
-#region 删除引擎（安全优先：默认回收站，占用自动跳过，保留根目录）
-function Remove-DirContents {
-  # 保留根目录、删除全部子项；返回实际释放字节
-  param([string]$Dir, [string]$Mode)
-  # 根自身是重解析点 → 只删链接本身，绝不枚举进链接目标（防止清空真实目标内容）
-  try {
-    if ([IO.DirectoryInfo]::new($Dir).Attributes -band [IO.FileAttributes]::ReparsePoint) {
-      try {
-        if ($Mode -eq 'Recycle') {
-          [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteDirectory($Dir, 'OnlyErrorDialogs', 'SendToRecycleBin', 'ThrowException')
-        } else {
-          [IO.Directory]::Delete($Dir, $false)
-        }
-      } catch { }
-      return 0L
-    }
-  } catch { }
-  $released = 0L
-  foreach ($f in [IO.Directory]::EnumerateFiles($Dir)) {
-    try {
-      $sz = ([IO.FileInfo]::new($f)).Length
-      if ($Mode -eq 'Recycle') {
-        [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile($f, 'OnlyErrorDialogs', 'SendToRecycleBin')
-      } else {
-        [IO.File]::Delete($f)
-      }
-      $released += $sz
-    } catch { }   # 占用/权限失败 → 自动跳过
-  }
-  foreach ($d in [IO.Directory]::EnumerateDirectories($Dir)) {
-    # 重解析点子目录（Junction/符号链接）：只删链接本身，不测大小、不递归、不枚举目标
-    $isReparse = $false
-    try { $isReparse = ([IO.DirectoryInfo]::new($d).Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 } catch { }
-    if ($isReparse) {
-      try {
-        if ($Mode -eq 'Recycle') {
-          [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteDirectory($d, 'OnlyErrorDialogs', 'SendToRecycleBin', 'ThrowException')
-        } else {
-          [IO.Directory]::Delete($d, $false)
-        }
-      } catch { }
-      continue
-    }
-    $sz = Measure-DirBytes $d
-    try {
-      if ($Mode -eq 'Recycle') {
-        [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteDirectory($d, 'OnlyErrorDialogs', 'SendToRecycleBin', 'ThrowException')
-        $released += $sz
-      } else {
-        try {
-          [IO.Directory]::Delete($d, $true)
-          $released += $sz
-        } catch {
-          $released += Remove-DirContents $d 'Permanent'   # 子目录被占用 → 递归逐项
-        }
-      }
-    } catch {
-      if ($Mode -eq 'Recycle') { $released += Remove-DirContents $d 'Recycle' }  # 递归降级
-    }
-  }
-  if ($Mode -eq 'Permanent') {
-    # 永久模式：清空后尝试连根删除；被占用/被监视则静默保留（不报错不崩溃）
-    try { [IO.Directory]::Delete($Dir, $true) } catch { }
-  }
-  return $released
-}
-
-function Remove-PatternFile {
-  param([string]$Path, [string]$Mode)
-  if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return 0L }
-  try {
-    $sz = ([IO.FileInfo]::new($Path)).Length
-    if ($Mode -eq 'Recycle') {
-      [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile($Path, 'OnlyErrorDialogs', 'SendToRecycleBin')
-    } else {
-      [IO.File]::Delete($Path)
-    }
-    return $sz
-  } catch { return 0L }
-}
-
-function Invoke-ExecItem {
-  param($Item)
-  $cmd = $Item.execCommand
-  $timeout = if ($Item.execTimeoutSec) { $Item.execTimeoutSec } else { 120 }
-  Write-CleanLog "执行命令项: $($Item.name)"
-  $job = Start-Job -ScriptBlock { param($c) try { Invoke-Expression $c | Out-Null; 'OK' } catch { "ERR: $_" } } -ArgumentList $cmd
-  $done = Wait-Job $job -Timeout $timeout
-  $res = if ($done) { (Receive-Job $job -Keep) -join ' | ' } else { 'TIMEOUT(已中止)' }
-  if (-not $done) { Stop-Job $job }
-  Remove-Job $job -Force -ErrorAction SilentlyContinue
-  Write-CleanLog "命令项结果: $res"
-  return 0L
-}
-
-function Invoke-SafeDelete {
-  # 统一删除入口：白名单闸门 + 回收站/永久模式 + 逐项日志
-  param($Item, [string]$Mode)
-  $released = 0L
-  $skipped = 0
-  if ($Item.method -eq 'exec') {
-    $released = Invoke-ExecItem $Item
-    return [pscustomobject]@{ Name = $Item.name; Released = $released; Skipped = 0 }
-  }
-  foreach ($raw in $Item.paths) {
-    foreach ($p in (Get-ExpandedPaths $raw)) {
-      if (-not (Test-Path -LiteralPath $p)) { continue }
-      $full = [IO.Path]::GetFullPath($p)
-      if (-not (Test-Whitelist $full)) {
-        Write-CleanLog "跳过(受保护路径): $full"
-        $skipped++
-        continue
-      }
-      try {
-        if ($Item.method -eq 'delete-file') {
-          $released += Remove-PatternFile $full $Mode
-        } else {
-          $released += Remove-DirContents $full $Mode
-        }
-        Write-CleanLog "已清理: $($Item.name) :: $full"
-      } catch {
-        Write-CleanLog "清理失败: $($Item.name) :: $full :: $($_.Exception.Message)"
-      }
-    }
-  }
-  return [pscustomobject]@{ Name = $Item.name; Released = $released; Skipped = $skipped }
-}
-
-function Export-CleanReport {
-  # 清理完成后自动导出 CSV 报告到 runtime\reports（写入仅限工具目录内，UTF-8 BOM 便于 Excel 打开）
-  param(
-    [object[]]$Details,
-    [long]$Planned = 0,
-    [long]$Released = 0,
-    [int]$Skipped = 0,
-    [string]$Mode = 'Recycle',
-    [string]$Note = ''
-  )
-  try {
-    $dir = Join-Path $script:DataDir 'reports'
-    if (-not (Test-Path -LiteralPath $dir)) { $null = New-Item -ItemType Directory -Path $dir -Force }
-    $file = Join-Path $dir ('clean-{0}.csv' -f (Get-Date -Format 'yyyyMMdd-HHmmss'))
-    $ts = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
-    $lines = [System.Collections.Generic.List[string]]::new()
-    $lines.Add('时间,模式,项目,分类,风险,计划大小(字节),实际释放(字节),跳过数')
-    foreach ($d in $Details) {
-      $name = '"' + ([string]$d.Name -replace '"', '""') + '"'
-      $lines.Add(('{0},{1},{2},{3},{4},{5},{6},{7}' -f $ts, $Mode, $name,
-        [string]$d.Category, [string]$d.Risk, [long]$d.Size, [long]$d.Released, [int]$d.Skipped))
-    }
-    $lines.Add(('{0},{1},"合计",,,{2},{3},{4}' -f $ts, $Mode, $Planned, $Released, $Skipped))
-    if ($Note) { $lines.Add(('{0},{1},"备注: {2}",,,0,0,0' -f $ts, $Mode, ($Note -replace '"', '""'))) }
-    [IO.File]::WriteAllLines($file, $lines, (New-Object System.Text.UTF8Encoding $true))
-    return $file
-  } catch {
-    Write-CleanLog ('清理报告导出失败: ' + $_.Exception.Message)
-    return $null
-  }
-}
-#endregion
 
 #region UI 工具（字节格式化 / 风险色 / 占位页）
 function Format-Bytes {
@@ -1047,121 +582,7 @@ function Save-Settings {
 #endregion
 
 #region 附加功能页（大文件 / 软件占用 / 重复文件 / 还原点 / 启动项）
-function Get-FixedDrives {
-  # 固定磁盘（DriveType=3）的盘符列表，如 C: D: E:；逗号包裹保证返回数组
-  $drives = @()
-  try { $drives = @(Get-CimInstance Win32_LogicalDisk -Filter "DriveType=3" | ForEach-Object { $_.DeviceID }) } catch { $drives = @('C:') }
-  return , $drives
-}
-
-function Open-InExplorer {
-  param([string]$Path, [switch]$Select)
-  try {
-    if ($Select) { Start-Process explorer.exe -ArgumentList "/select,`"$Path`"" } else { Start-Process explorer.exe -ArgumentList $Path }
-  } catch { }
-}
-
-function Remove-UserPathToRecycle {
-  # 附加页专用：单路径安全删除 → 仅回收站 + 白名单闸门；返回实际释放字节
-  param([string]$Path)
-  try { $full = [IO.Path]::GetFullPath($Path) } catch { return 0L }
-  if (-not (Test-Whitelist $full)) {
-    Write-CleanLog "跳过(受保护路径): $full"
-    return 0L
-  }
-  try {
-    if (Test-Path -LiteralPath $full -PathType Leaf) {
-      $sz = ([IO.FileInfo]::new($full)).Length
-      [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile($full, 'OnlyErrorDialogs', 'SendToRecycleBin')
-      return $sz
-    }
-    if (Test-Path -LiteralPath $full -PathType Container) {
-      $sz = Measure-DirBytes $full
-      [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteDirectory($full, 'OnlyErrorDialogs', 'SendToRecycleBin', 'ThrowException')
-      return $sz
-    }
-  } catch { }
-  return 0L
-}
-
-function Get-FileHashSha256 {
-  param([string]$Path)
-  try {
-    $fs = [IO.File]::OpenRead($Path)
-    try {
-      $sha = [Security.Cryptography.SHA256]::Create()
-      try { return [BitConverter]::ToString($sha.ComputeHash($fs)).Replace('-', '') } finally { $sha.Dispose() }
-    } finally { $fs.Dispose() }
-  } catch { return $null }
-}
-
-function Get-FileHashSha256Partial {
-  # 首 64KB 部分哈希：重复检测预筛用（大文件先比头部，避免对每个候选全量读盘）
-  param([string]$Path)
-  try {
-    $fs = [IO.File]::OpenRead($Path)
-    try {
-      $len = [Math]::Min(65536L, $fs.Length)
-      $buf = New-Object byte[] $len
-      $null = $fs.Read($buf, 0, $len)
-      $sha = [Security.Cryptography.SHA256]::Create()
-      try { return [BitConverter]::ToString($sha.ComputeHash($buf)).Replace('-', '') } finally { $sha.Dispose() }
-    } finally { $fs.Dispose() }
-  } catch { return $null }
-}
-
 # ---------- Tab: 空间分析（WizTree 式目录占用浏览器） ----------
-function Get-DirSizes {
-  # 全盘迭代扫描：每个目录的直接文件字节合计（不含子目录内容）；跳过重解析点
-  param([string]$Root, [System.ComponentModel.BackgroundWorker]$W)
-  $own = New-Object 'System.Collections.Generic.Dictionary[string,long]'
-  $stack = New-Object System.Collections.Generic.Stack[string]
-  $stack.Push($Root)
-  $dirs = 0
-  while ($stack.Count -gt 0) {
-    if ($W -and $W.CancellationPending) { return $null }
-    $dir = $stack.Pop()
-    $bytes = 0L
-    try {
-      $di = [IO.DirectoryInfo]::new($dir)
-      if ($di.Attributes -band [IO.FileAttributes]::ReparsePoint) { continue }
-      foreach ($f in [IO.Directory]::EnumerateFiles($dir)) {
-        try { $bytes += ([IO.FileInfo]::new($f)).Length } catch { }
-      }
-      foreach ($d in [IO.Directory]::EnumerateDirectories($dir)) {
-        try {
-          if (([IO.DirectoryInfo]::new($d)).Attributes -band [IO.FileAttributes]::ReparsePoint) { continue }
-          $stack.Push($d)
-        } catch { }
-      }
-    } catch { }
-    $own[$dir] = $bytes
-    $dirs++
-    if (($dirs % 500) -eq 0 -and $W) { $W.ReportProgress(0, ("已扫描 {0} 个目录..." -f $dirs)) }
-  }
-  return $own
-}
-
-function Get-MergedDirTotals {
-  # 自底向上聚合：total[dir] = dir 及全部子孙的直接文件字节合计
-  # 第一遍按长度倒序预建全部条目（total=own）；第二遍按同一顺序把每个目录的 total
-  # 累加进其父（长度倒序保证子目录先于父目录被累加）
-  param([System.Collections.Generic.Dictionary[string,long]]$Own)
-  $total = New-Object 'System.Collections.Generic.Dictionary[string,long]'
-  $keys = [string[]]$Own.Keys
-  $cmp = [System.Comparison[string]] { param($a, $b) $b.Length.CompareTo($a.Length) }
-  [System.Array]::Sort($keys, $cmp)
-  foreach ($k in $keys) { $total[$k] = $Own[$k] }
-  foreach ($k in $keys) {
-    $pi = $k.LastIndexOf('\')
-    if ($pi -gt 2) {   # 排除 "C:\" 盘根自身（无父目录可累加）
-      $parent = $k.Substring(0, $pi)
-      if ($total.ContainsKey($parent)) { $total[$parent] += $total[$k] }
-    }
-  }
-  return $total
-}
-
 function New-SpacePage {
   # 布局：工具栏 44 | 表头+列表 | 页脚 44
   $g = New-Object System.Windows.Controls.Grid
@@ -1481,38 +902,6 @@ function New-SpacePage {
   return $g
 }
 
-# ---------- Tab: 大文件分析 ----------
-function Get-LargeFiles {
-  # 迭代(栈)遍历目标盘，收集 >= 阈值的文件；跳过重解析点与系统巨型目录
-  param([string]$Root, [long]$Threshold, [System.ComponentModel.BackgroundWorker]$W)
-  $result = New-Object System.Collections.Generic.List[object]
-  $skipNames = @('WinSxS', 'System Volume Information', '$Recycle.Bin', 'Recovery', 'Config.Msi', 'Windows.old')
-  $stack = New-Object System.Collections.Generic.Stack[string]
-  $stack.Push($Root)
-  $found = 0
-  while ($stack.Count -gt 0) {
-    if ($W -and $W.CancellationPending) { return $result }
-    $dir = $stack.Pop()
-    try {
-      $di = [IO.DirectoryInfo]::new($dir)
-      if ($di.Attributes -band [IO.FileAttributes]::ReparsePoint) { continue }
-      if ($skipNames -contains $di.Name) { continue }
-      foreach ($f in [IO.Directory]::EnumerateFiles($dir)) {
-        try {
-          $fi = [IO.FileInfo]::new($f)
-          if ($fi.Length -ge $Threshold) {
-            $result.Add([pscustomobject]@{ Name = $fi.Name; Size = $fi.Length; Modified = $fi.LastWriteTime; Path = $fi.FullName })
-            $found++
-            if ($W -and (($found % 20) -eq 0)) { $W.ReportProgress(0, ("已发现 {0} 个大文件..." -f $found)) }
-          }
-        } catch { }
-      }
-      foreach ($d in [IO.Directory]::EnumerateDirectories($dir)) { $stack.Push($d) }
-    } catch { }
-  }
-  return $result
-}
-
 function New-LargeFilesPage {
   # 布局：工具栏 44 | 表头+列表 | 页脚 44；单选行 + 右键菜单 + 表头点击排序
   $g = New-Object System.Windows.Controls.Grid
@@ -1772,71 +1161,6 @@ function New-LargeFilesPage {
   return $g
 }
 
-# ---------- Tab: 空文件夹清理 ----------
-function Get-EmptyDirs {
-  # 找出可安全删除的空目录（级联判定）：
-  #   空目录 = 自身 0 个直接文件，且全部子目录也均为空；
-  # 子目录含重解析点(junction/符号链接)或访问失败 → 一律视为非空（阻断父目录删除，避免误伤目标内容）
-  # 只输出"空子树顶端"（其父目录非空）——删除时整棵空子树一并进回收站
-  param([string]$Root, [System.ComponentModel.BackgroundWorker]$W)
-  $files = New-Object 'System.Collections.Generic.Dictionary[string,int]'
-  $children = New-Object 'System.Collections.Generic.Dictionary[string,System.Collections.Generic.List[string]]'
-  $stack = New-Object System.Collections.Generic.Stack[string]
-  $stack.Push($Root)
-  $dirs = 0
-  while ($stack.Count -gt 0) {
-    if ($W -and $W.CancellationPending) { return $null }
-    $dir = $stack.Pop()
-    $fc = 0
-    $kids = New-Object 'System.Collections.Generic.List[string]'
-    try {
-      $di = [IO.DirectoryInfo]::new($dir)
-      if ($di.Attributes -band [IO.FileAttributes]::ReparsePoint) { continue }   # 重解析目录不入字典（其父会被它阻断）
-      foreach ($f in [IO.Directory]::EnumerateFiles($dir)) { $fc++ }
-      foreach ($d in [IO.Directory]::EnumerateDirectories($dir)) {
-        try {
-          if (([IO.DirectoryInfo]::new($d)).Attributes -band [IO.FileAttributes]::ReparsePoint) {
-            $kids.Add($d)   # 重解析子目录不展开但保留在子列表 → 阻断父目录
-            continue
-          }
-          $kids.Add($d)
-          $stack.Push($d)
-        } catch { $kids.Add($d) }   # 访问失败：不可判定 → 阻断父目录
-      }
-    } catch { continue }            # 无法访问的目录不参与判定（其父已被它阻断）
-    $files[$dir] = $fc
-    $children[$dir] = $kids
-    $dirs++
-    if (($dirs % 500) -eq 0 -and $W) { $W.ReportProgress(0, ("已扫描 {0} 个目录..." -f $dirs)) }
-  }
-  # 自底向上标记：长度倒序保证先判定最深目录
-  $empty = New-Object 'System.Collections.Generic.HashSet[string]'
-  $keys = [string[]]$files.Keys
-  $cmp = [System.Comparison[string]] { param($a, $b) $b.Length.CompareTo($a.Length) }
-  [System.Array]::Sort($keys, $cmp)
-  foreach ($k in $keys) {
-    $isEmpty = ($files[$k] -eq 0)
-    if ($isEmpty) {
-      foreach ($c in $children[$k]) {
-        if (-not $empty.Contains($c)) { $isEmpty = $false; break }
-      }
-    }
-    if ($isEmpty) { $null = $empty.Add($k) }
-  }
-  # 只留空子树顶端（父目录非空）
-  $result = New-Object System.Collections.Generic.List[object]
-  foreach ($k in $keys) {
-    if (-not $empty.Contains($k)) { continue }
-    $pi = $k.LastIndexOf('\')
-    if ($pi -gt 2) {
-      $parent = $k.Substring(0, $pi)
-      if ($empty.Contains($parent)) { continue }
-    }
-    $result.Add([pscustomobject]@{ Path = $k; Name = [IO.Path]::GetFileName($k) })
-  }
-  return $result
-}
-
 function New-EmptyDirPage {
   # 布局：工具栏 44 | 表头+列表 | 页脚 44
   $g = New-Object System.Windows.Controls.Grid
@@ -2069,76 +1393,6 @@ function New-EmptyDirPage {
   return $g
 }
 
-# ---------- Tab: 系统加速 ----------
-# ntdll NtSetSystemInformation：SystemMemoryListInformation(80) 释放内存
-#   命令 5 = MemoryPurgeStandbyList（清待机内存）  命令 3 = MemoryEmptyWorkingSets（修剪工作集）
-#   均需管理员权限；失败返回非零 NTSTATUS，UI 侧只提示不崩溃
-if (-not ([System.Management.Automation.PSTypeName]'DiskCleanerPro.NativeMem').Type) {
-  Add-Type -TypeDefinition @"
-using System;
-using System.Runtime.InteropServices;
-namespace DiskCleanerPro {
-  [StructLayout(LayoutKind.Sequential)]
-  public class MEMORYSTATUSEX {
-    public uint dwLength = (uint)Marshal.SizeOf(typeof(MEMORYSTATUSEX));
-    public uint dwMemoryLoad;
-    public ulong ullTotalPhys;
-    public ulong ullAvailPhys;
-    public ulong ullTotalPageFile;
-    public ulong ullAvailPageFile;
-    public ulong ullTotalVirtual;
-    public ulong ullAvailVirtual;
-    public ulong ullAvailExtendedVirtual;
-  }
-  public static class NativeMem {
-    [DllImport("kernel32.dll", SetLastError = true)]
-    public static extern bool GlobalMemoryStatusEx([In, Out] MEMORYSTATUSEX b);
-    [DllImport("ntdll.dll")]
-    public static extern int NtSetSystemInformation(int cls, ref int info, int len);
-    // privilege 13 = SeProfileSingleProcessPrivilege（SystemMemoryListInformation 必需），
-    // privilege 5 = SeIncreaseQuotaPrivilege（工作集操作兜底）
-    [DllImport("ntdll.dll")]
-    public static extern int RtlAdjustPrivilege(int privilege, bool enable, bool currentThread, out bool enabled);
-  }
-}
-"@
-}
-
-function Get-MemoryInfoText {
-  # 返回 @{ Pct = 0-100; UsedBytes; TotalBytes }；调用方负责 try/catch
-  $st = New-Object DiskCleanerPro.MEMORYSTATUSEX
-  if (-not [DiskCleanerPro.NativeMem]::GlobalMemoryStatusEx($st)) {
-    return $null
-  }
-  return @{
-    Pct        = [int]$st.dwMemoryLoad
-    UsedBytes  = [long]($st.ullTotalPhys - $st.ullAvailPhys)
-    TotalBytes = [long]$st.ullTotalPhys
-  }
-}
-
-function Invoke-MemoryPurge {
-  param([int]$Command)   # 5=清待机列表 3=修剪工作集
-  # 先在进程令牌中启用所需特权（管理员身份 ≠ 特权已启用；未启用会返回 0xC0000061）
-  $enabled = $false
-  $null = [DiskCleanerPro.NativeMem]::RtlAdjustPrivilege(13, $true, $false, [ref]$enabled)
-  $i = $Command
-  $st = [DiskCleanerPro.NativeMem]::NtSetSystemInformation(80, [ref]$i, 4)
-  if ($st -ne 0) {
-    $null = [DiskCleanerPro.NativeMem]::RtlAdjustPrivilege(5, $true, $false, [ref]$enabled)
-    $i = $Command
-    $st = [DiskCleanerPro.NativeMem]::NtSetSystemInformation(80, [ref]$i, 4)
-  }
-  return $st             # 0 = STATUS_SUCCESS
-}
-
-function Test-IsAdmin {
-  try {
-    $id = [Security.Principal.WindowsIdentity]::GetCurrent()
-    return ([Security.Principal.WindowsPrincipal]::new($id)).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-  } catch { return $false }
-}
-
 function New-SysAccelPage {
   # 布局：内存卡片（标题 + 进度条 + 百分比 + 明细 + 操作按钮 + 结果）
   $g = New-Object System.Windows.Controls.Grid
@@ -2256,36 +1510,6 @@ function New-SysAccelPage {
   })
 
   return $g
-}
-
-# ---------- Tab: 软件占用 ----------
-function Get-InstalledSoftware {
-  $rows = New-Object System.Collections.Generic.List[object]
-  $keys = @(
-    'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*',
-    'HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*',
-    'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*'
-  )
-  foreach ($k in $keys) {
-    if (-not (Test-Path $k)) { continue }
-    foreach ($sub in (Get-Item $k)) {
-      try {
-        $name = $sub.GetValue('DisplayName')
-        if (-not $name) { continue }
-        $loc = $sub.GetValue('InstallLocation')
-        $est = $sub.GetValue('EstimatedSize')   # 单位 KB
-        $rows.Add([pscustomobject]@{
-          Name      = [string]$name
-          Publisher = [string]$sub.GetValue('Publisher')
-          Version   = [string]$sub.GetValue('DisplayVersion')
-          Location  = [string]$loc
-          RegKB     = if ($est) { [long]$est } else { 0L }
-          RealBytes = 0L
-        })
-      } catch { }
-    }
-  }
-  return $rows
 }
 
 function New-SoftwarePage {
@@ -2482,86 +1706,6 @@ function New-SoftwarePage {
   Fill-SoftwareList
 
   return $g
-}
-
-# ---------- Tab: 重复文件检测 ----------
-function Get-DupeGroups {
-  # 大小分桶(跳过<1MB) → SHA-256 → 同哈希=重复组；保留者=路径最短/最早
-  param([string]$Root, [System.ComponentModel.BackgroundWorker]$W)
-  $bySize = @{}
-  $files = 0
-  $stack = New-Object System.Collections.Generic.Stack[string]
-  $stack.Push($Root)
-  while ($stack.Count -gt 0) {
-    if ($W -and $W.CancellationPending) { return $null }
-    $dir = $stack.Pop()
-    try {
-      $di = [IO.DirectoryInfo]::new($dir)
-      if ($di.Attributes -band [IO.FileAttributes]::ReparsePoint) { continue }
-      foreach ($f in [IO.Directory]::EnumerateFiles($dir)) {
-        try {
-          $fi = [IO.FileInfo]::new($f)
-          if ($fi.Length -lt 1048576) { continue }   # 跳过 <1MB，聚焦大冗余
-          $sz = $fi.Length
-          if (-not $bySize.ContainsKey($sz)) { $bySize[$sz] = New-Object System.Collections.Generic.List[string] }
-          $bySize[$sz].Add($f)
-          $files++
-          if (($files % 200) -eq 0 -and $W) { $W.ReportProgress(0, ("枚举文件 {0} 个..." -f $files)) }
-        } catch { }
-      }
-      foreach ($d in [IO.Directory]::EnumerateDirectories($dir)) { $stack.Push($d) }
-    } catch { }
-  }
-  # 阶段1：首 64KB 头部哈希预筛（dupeGuru 同款两级策略：同大小 → 比头部 → 只对头部相同者做全量哈希）
-  $fullJobs = New-Object System.Collections.Generic.List[object]   # @{ Paths=List[string]; Size=long }
-  $i = 0
-  foreach ($k in @($bySize.Keys)) {
-    $bucket = $bySize[$k]
-    if ($bucket.Count -lt 2) { continue }
-    $partMap = @{}
-    foreach ($f in $bucket) {
-      if ($W -and $W.CancellationPending) { return $null }
-      $ph = Get-FileHashSha256Partial $f
-      if (-not $ph) { continue }
-      $key = [string]$k + '|' + $ph
-      if (-not $partMap.ContainsKey($key)) { $partMap[$key] = New-Object System.Collections.Generic.List[string] }
-      $null = $partMap[$key].Add($f)
-      $i++
-      if (($i % 100) -eq 0 -and $W) { $W.ReportProgress(0, ("头部比对 {0}..." -f $i)) }
-    }
-    foreach ($lst in $partMap.Values) {
-      if ($lst.Count -ge 2) { $fullJobs.Add([pscustomobject]@{ Paths = $lst; Size = $k }) }
-    }
-  }
-  $bySize = $null
-  # 阶段2：仅对头部相同的组做全量 SHA-256
-  $byHash = @{}
-  $i = 0
-  foreach ($job in $fullJobs) {
-    foreach ($f in $job.Paths) {
-      if ($W -and $W.CancellationPending) { return $null }
-      $h = Get-FileHashSha256 $f
-      if (-not $h) { continue }
-      if (-not $byHash.ContainsKey($h)) { $byHash[$h] = New-Object System.Collections.Generic.List[string] }
-      $null = $byHash[$h].Add($f)
-      $i++
-      if (($i % 50) -eq 0 -and $W) { $W.ReportProgress(0, ("全量哈希 {0}..." -f $i)) }
-    }
-  }
-  $result = New-Object System.Collections.Generic.List[object]
-  $g = 0
-  foreach ($h in $byHash.Keys) {
-    $list = $byHash[$h]
-    if ($list.Count -lt 2) { continue }
-    $g++
-    $size = 0L
-    try { $size = ([IO.FileInfo]::new($list[0])).Length } catch { }
-    $keep = ($list | Sort-Object @{ Expression = { $_.Length } }, @{ Expression = { $_ } })[0]
-    foreach ($f in $list) {
-      $result.Add([pscustomobject]@{ Group = $g; Size = $size; Path = $f; Keep = ($f -eq $keep) })
-    }
-  }
-  return $result
 }
 
 function New-DupeFilesPage {
@@ -2809,25 +1953,6 @@ function New-DupeFilesPage {
   return $g
 }
 
-# ---------- Tab: 还原点管理 ----------
-function Get-RestorePoints {
-  $p = @()
-  try { $p = @(Get-ComputerRestorePoint -ErrorAction Stop) } catch { $p = @() }
-  return , $p   # 逗号包裹，保证调用方始终拿到数组（即使 0/1 个点）
-}
-
-function Remove-OldRestorePoints {
-  # 删除除最近3个外的所有还原点；失败项跳过。返回删除数
-  $pts = @(Get-ComputerRestorePoint -ErrorAction SilentlyContinue)
-  if ($pts.Count -le 3) { return 0 }
-  $toDelete = $pts | Sort-Object CreationTime | Select-Object -First ($pts.Count - 3)
-  $del = 0
-  foreach ($rp in $toDelete) {
-    try { Remove-ComputerRestorePoint -RestorePoint $rp.SequenceNumber -ErrorAction Stop; $del++ } catch { }
-  }
-  return $del
-}
-
 function New-RestorePage {
   # 布局：工具栏 44（刷新 / 删除旧还原点 / 状态）| 表头+列表
   $g = New-Object System.Windows.Controls.Grid
@@ -2970,56 +2095,6 @@ function New-RestorePage {
 
   Fill-RestoreList
   return $g
-}
-
-# ---------- Tab: 启动项管理 ----------
-function Get-StartupItems {
-  $rows = New-Object System.Collections.Generic.List[object]
-  $runKeys = @(
-    @{ Src = 'HKCU\Run';   Path = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' },
-    @{ Src = 'HKLM\Run';   Path = 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Run' },
-    @{ Src = 'HKLM\Run';   Path = 'HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Run' },
-    @{ Src = 'HKCU\RunOnce'; Path = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\RunOnce' }
-  )
-  foreach ($k in $runKeys) {
-    if (-not (Test-Path $k.Path)) { continue }
-    try {
-      $key = Get-Item $k.Path
-      foreach ($n in $key.GetValueNames()) {
-        try { $rows.Add([pscustomobject]@{ Source = $k.Src; Name = $n; Command = [string]$key.GetValue($n); Status = '启用' }) } catch { }
-      }
-    } catch { }
-  }
-  try {
-    $sh = New-Object -ComObject WScript.Shell
-    foreach ($fd in @(@{ Src = '启动文件夹(当前用户)'; Key = 'Startup' }, @{ Src = '启动文件夹(所有用户)'; Key = 'AllUsersStartup' })) {
-      try {
-        $dir = $sh.SpecialFolders.Item($fd.Key)
-        if ($dir -and (Test-Path -LiteralPath $dir)) {
-          foreach ($f in [IO.Directory]::EnumerateFiles($dir)) {
-            $rows.Add([pscustomobject]@{ Source = $fd.Src; Name = [IO.Path]::GetFileName($f); Command = $f; Status = '启用' })
-          }
-        }
-      } catch { }
-    }
-  } catch { }
-  return $rows
-}
-
-function Backup-StartupReg {
-  # 备份 Run 注册表键为 .reg 到 runtime（仅写入工具目录，不删除任何东西）
-  $dir = $script:DataDir
-  if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
-  $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
-  $files = @()
-  foreach ($k in @(
-    'HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run',
-    'HKEY_LOCAL_MACHINE\Software\Microsoft\Windows\CurrentVersion\Run'
-  )) {
-    $out = Join-Path $dir ('startup-' + $k.Split('\')[0] + '-' + $stamp + '.reg')
-    try { & regedit /e $out $k 2>$null; if (Test-Path $out) { $files += $out } } catch { }
-  }
-  return $files
 }
 
 function New-StartupPage {
@@ -3623,9 +2698,7 @@ function New-MainWindow {
   # ---- 事件：主清理页逻辑在 New-CleanPage 内，操作条在此接线 ----
   $script:BtnScan.Add_Click({ Start-Scan })
   $btnClearCache.Add_Click({
-    $script:SizeCache = @{}
-    $p = Join-Path $script:DataDir 'size-cache.json'
-    if (Test-Path $p) { Remove-Item -LiteralPath $p -Force -ErrorAction SilentlyContinue }
+    Clear-SizeCache   # 原地 .Clear()，不重建对象——worker runspace 持有共享缓存引用
     Log-Line '已清空扫描缓存，下次扫描全量实测'
     Start-Scan
   })
