@@ -395,16 +395,16 @@ function Clear-SizeCache {
 
 function Get-ItemStamp {
   # 清理项所有展开根路径的时间戳指纹（根目录时间 + 路径数量），任一变化 → 缓存失效重测
+  # 用 .NET 静态读取取代 Get-Item cmdlet（无解释器逐路径开销）；不存在路径不计入
   param($Item)
   $stamp = 0L
   $paths = @(Get-ItemPaths $Item)
   foreach ($p in $paths) {
     try {
-      $fsItem = Get-Item -LiteralPath $p -Force -ErrorAction SilentlyContinue
-      if ($fsItem) {
-        $t = $fsItem.LastWriteTimeUtc.Ticks
-        if ($t -gt $stamp) { $stamp = $t }
-      }
+      $t = 0L
+      if ([IO.File]::Exists($p)) { $t = [IO.File]::GetLastWriteTimeUtc($p).Ticks }
+      elseif ([IO.Directory]::Exists($p)) { $t = [IO.DirectoryInfo]::new($p).LastWriteTimeUtc.Ticks }
+      if ($t -gt $stamp) { $stamp = $t }
     } catch { }
   }
   return ($stamp + $paths.Count)   # 路径集合变化也计入指纹
@@ -430,15 +430,13 @@ function Get-ItemSize {
   }
   $total = 0L
   foreach ($p in (Get-ItemPaths $Item)) {
-    if (-not (Test-Path -LiteralPath $p)) { continue }
     try {
       if ($Item.method -eq 'delete-file') {
-        if (Test-Path -LiteralPath $p -PathType Leaf) {
+        if ([IO.File]::Exists($p)) {
           if (Test-AgeEligible -Path $p -MinAgeDays $Item.minAgeDays) { $total += ([IO.FileInfo]::new($p)).Length }
         }
       } else {
-        $fsItem = Get-Item -LiteralPath $p -Force
-        if ($fsItem -and ($fsItem.Attributes -band [IO.FileAttributes]::Directory)) { $total += Measure-DirBytes $p }
+        if ([IO.Directory]::Exists($p)) { $total += Measure-DirBytes $p }
       }
     } catch { }
   }
