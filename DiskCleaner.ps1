@@ -411,6 +411,10 @@ function Test-Whitelist {
   param([string]$FullPath)
   if (-not $FullPath) { return $false }
   try { $fp = [IO.Path]::GetFullPath($FullPath).TrimEnd('\') + '\' } catch { return $false }
+  # UNC（网络共享）一律禁止：不在本机受控范围内
+  if ($fp.StartsWith('\\')) { return $false }
+  # 任意盘符的盘根一律禁止（C:\..L:\ 已列于 ProtectedRoots，此处兜底覆盖其余盘符/热插拔盘）
+  if ($fp -match '^[A-Za-z]:\\$') { return $false }
   # 显式放行工具自建的可丢弃测试数据（testdata，仅自测用、无真实数据），
   # 须在受保护根/禁止子树判断之前短路，否则会被盘根(G:\)等规则拦死
   $testArea = Join-Path $script:ToolRoot 'testdata'
