@@ -19,20 +19,24 @@ $script:LogDir   = Join-Path $script:DataDir 'logs'
 #endregion
 
 #region 主题色板（无图片资源，纯代码着色）
+# Fluent 风浅色主题：中性底色承载内容，橙色只做主操作点缀；风险色换更沉稳的现代色阶
 $script:Theme = @{
-  Bg        = '#FFF3E0'   # 主背景（浅橙米）
-  Banner    = '#E65100'   # 顶部横幅（深橙）
-  Primary   = '#F57C00'   # 主按钮（橙）
-  Secondary = '#FB8C00'   # 次级按钮
-  Green     = '#43A047'   # 绝对安全
-  Yellow    = '#F9A825'   # 谨慎
-  Red       = '#E53935'   # 需确认
-  Text      = '#3E2723'   # 主文字（深棕）
-  Disabled  = '#BDBDBD'
+  Bg        = '#F5F6F8'   # 主背景（中性浅灰）
+  Banner    = '#FFFFFF'   # 顶部栏（白）
+  Primary   = '#F97316'   # 主操作色（橙）
+  Secondary = '#F97316'   # 次级（与主色一致，弱化多橙叠加）
+  Green     = '#16A34A'   # 绝对安全
+  Yellow    = '#D97706'   # 谨慎
+  Red       = '#DC2626'   # 需确认
+  Text      = '#1F2937'   # 主文字（深灰蓝）
+  SubText   = '#6B7280'   # 次级文字
+  Disabled  = '#C4C9D0'
   FontUi    = 'Microsoft YaHei UI'   # 界面统一字体（Win11 风格）
   CardBg    = '#FFFFFF'   # 卡片/面板背景
-  CardLine  = '#F0E2D0'   # 面板分隔线
-  LightBtn  = '#FBE7CC'   # 浅橙副按钮（深色文字）
+  CardLine  = '#E5E7EB'   # 发丝分隔线
+  LightBtn  = '#EEF1F4'   # 浅灰副按钮（深色文字）
+  NavBg     = '#EEF1F4'   # 侧边导航条背景
+  NavHover  = '#E4E8ED'   # 侧边导航悬停
 }
 #endregion
 
@@ -266,7 +270,7 @@ namespace DiskCleaner {
 }
 # 统一创建现代按钮：$Back 十六进制，默认浅橙副按钮样式（深色主按钮/红色危险按钮由调用处显式覆盖）
 function New-ModernButton {
-  param([string]$Text, [string]$Back = $script:Theme.LightBtn, [string]$Fore = '#6D4C41', [int]$FontSize = 9, [switch]$Bold)
+  param([string]$Text, [string]$Back = $script:Theme.LightBtn, [string]$Fore = '#374151', [int]$FontSize = 9, [switch]$Bold)
   $b = New-Object DiskCleaner.ModernButton
   $b.Text = $Text
   $b.BackColor = [System.Drawing.ColorTranslator]::FromHtml($Back)
@@ -2546,99 +2550,97 @@ function New-MainWindow {
   $f.Icon = [System.Drawing.Icon]::FromHandle($iconBmp.GetHicon())
   $ipen.Dispose(); $ib.Dispose(); $ip.Dispose(); $ig.Dispose(); $iconBmp.Dispose()
 
-  # ============ 顶部横幅 ============
+  # ============ 顶部栏（Fluent 风：白色纤薄头部，橙色只留在进度与主按钮上） ============
   $banner = New-Object System.Windows.Forms.Panel
   $banner.Dock = 'Top'
-  $banner.Height = 100
+  $banner.Height = 64
   # 先按设计宽度设置：右锚定子控件首次布局时才能按真实右缘计算（否则按默认 200 宽算出负留白→被推到屏外）
   $banner.Width = $f.ClientSize.Width
   $banner.BackColor = [System.Drawing.ColorTranslator]::FromHtml($script:Theme.Banner)
-  # 横幅渐变：深橙 → 亮橙（LinearGradientBrush 自上而下）
+  # 底部发丝分隔线
   $banner.add_Paint({
     param($s, $e)
-    $g = $e.Graphics
-    $rect = $s.ClientRectangle
-    $c1 = [System.Drawing.ColorTranslator]::FromHtml($script:Theme.Banner)
-    $c2 = [System.Drawing.ColorTranslator]::FromHtml($script:Theme.Secondary)
-    $brush = New-Object System.Drawing.Drawing2D.LinearGradientBrush($rect, $c1, $c2, 90.0)
-    $g.FillRectangle($brush, $rect)
-    $brush.Dispose()
+    try {
+      $pen = New-Object System.Drawing.Pen([System.Drawing.ColorTranslator]::FromHtml($script:Theme.CardLine))
+      $e.Graphics.DrawLine($pen, 0, $s.Height - 1, $s.Width, $s.Height - 1)
+      $pen.Dispose()
+    } catch { }
   })
 
   $title = New-Object System.Windows.Forms.Label
-  $title.Text = 'DiskCleanerPro  C 盘智能清理工具'
-  $title.Font = New-Object System.Drawing.Font($script:Theme.FontUi,20, [System.Drawing.FontStyle]::Bold)
-  $title.ForeColor = [System.Drawing.Color]::White
-  $title.Location = New-Object System.Drawing.Point(20, 10)
+  $title.Text = 'DiskCleanerPro'
+  $title.Font = New-Object System.Drawing.Font($script:Theme.FontUi,13, [System.Drawing.FontStyle]::Bold)
+  $title.ForeColor = [System.Drawing.ColorTranslator]::FromHtml($script:Theme.Text)
+  $title.Location = New-Object System.Drawing.Point(16, 6)
   $title.AutoSize = $true
   $banner.Controls.Add($title)
 
+  $subtitle = New-Object System.Windows.Forms.Label
+  $subtitle.Text = 'C 盘智能清理工具'
+  $subtitle.Font = New-Object System.Drawing.Font($script:Theme.FontUi, 8.5)
+  $subtitle.ForeColor = [System.Drawing.ColorTranslator]::FromHtml($script:Theme.SubText)
+  $subtitle.Location = New-Object System.Drawing.Point(16, 36)
+  $subtitle.AutoSize = $true
+  $banner.Controls.Add($subtitle)
+
   $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
   $adminBadge = New-Object System.Windows.Forms.Label
-  $adminBadge.Text = if ($isAdmin) { '管理员模式: 已启用' } else { '普通模式（建议以管理员运行）' }
-  $adminBadge.Font = New-Object System.Drawing.Font($script:Theme.FontUi,9, [System.Drawing.FontStyle]::Bold)
-  $adminBadge.ForeColor = [System.Drawing.Color]::White
-  $adminBadge.Location = New-Object System.Drawing.Point(20, 54)
+  $adminBadge.Text = if ($isAdmin) { '管理员' } else { '普通模式' }
+  $adminBadge.Font = New-Object System.Drawing.Font($script:Theme.FontUi, 8, [System.Drawing.FontStyle]::Bold)
+  $adminBadge.ForeColor = [System.Drawing.ColorTranslator]::FromHtml($(if ($isAdmin) { '#047857' } else { $script:Theme.Yellow }))
+  $adminBadge.BackColor = [System.Drawing.ColorTranslator]::FromHtml($(if ($isAdmin) { '#ECFDF5' } else { '#FEF3C7' }))
+  $adminBadge.Padding = New-Object System.Windows.Forms.Padding(8, 4, 8, 4)
+  $adminBadge.Location = New-Object System.Drawing.Point(168, 8)
   $adminBadge.AutoSize = $true
   $banner.Controls.Add($adminBadge)
 
-  $script:DiskInfo = New-Object System.Windows.Forms.Label
-  $script:DiskInfo.Text = '磁盘信息加载中...'
-  $script:DiskInfo.Font = New-Object System.Drawing.Font($script:Theme.FontUi,9)
-  $script:DiskInfo.ForeColor = [System.Drawing.Color]::White
-  $script:DiskInfo.AutoSize = $true
-  $script:DiskInfo.Location = New-Object System.Drawing.Point(940, 54)
-  $script:DiskInfo.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Right
-  $banner.Controls.Add($script:DiskInfo)
-
-  $script:DiskBar = New-ModernProgressBar -Fill '#FFFFFF' -Track '#D84315'
-  # 进度条左|右锚定：左右留白各 12px（第3行，避开第1行标题/第2行徽标与磁盘信息），缩小时拉伸
-  $script:DiskBar.Location = New-Object System.Drawing.Point(12, 73)
-  $script:DiskBar.Size = New-Object System.Drawing.Size(1100, 18)
-  $script:DiskBar.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Right
-  $script:DiskBar.Style = 'Continuous'
-  $banner.Controls.Add($script:DiskBar)
-
   $script:BtnScan = New-ModernButton
   $script:BtnScan.Text = '立即重新扫描'
-  $script:BtnScan.BackColor = [System.Drawing.ColorTranslator]::FromHtml($script:Theme.Secondary)
-  $script:BtnScan.ForeColor = [System.Drawing.Color]::White
-  $script:BtnScan.FlatStyle = 'Flat'
-  $script:BtnScan.Location = New-Object System.Drawing.Point(820, 12)
-  $script:BtnScan.Size = New-Object System.Drawing.Size(110, 30)
-  $script:BtnScan.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Right
+  $script:BtnScan.Location = New-Object System.Drawing.Point(330, 12)
+  $script:BtnScan.Size = New-Object System.Drawing.Size(110, 32)
   $banner.Controls.Add($script:BtnScan)
 
   $btnClearCache = New-ModernButton
   $btnClearCache.Text = '清空扫描缓存'
-  $btnClearCache.BackColor = [System.Drawing.ColorTranslator]::FromHtml($script:Theme.Secondary)
-  $btnClearCache.ForeColor = [System.Drawing.Color]::White
-  $btnClearCache.FlatStyle = 'Flat'
-  $btnClearCache.Location = New-Object System.Drawing.Point(930, 12)
-  $btnClearCache.Size = New-Object System.Drawing.Size(110, 30)
-  $btnClearCache.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Right
+  $btnClearCache.Location = New-Object System.Drawing.Point(446, 12)
+  $btnClearCache.Size = New-Object System.Drawing.Size(110, 32)
   $banner.Controls.Add($btnClearCache)
 
   $script:BtnCancelScan = New-ModernButton
   $script:BtnCancelScan.Text = '取消扫描'
-  $script:BtnCancelScan.BackColor = [System.Drawing.Color]::Gray
-  $script:BtnCancelScan.ForeColor = [System.Drawing.Color]::White
-  $script:BtnCancelScan.FlatStyle = 'Flat'
-  $script:BtnCancelScan.Location = New-Object System.Drawing.Point(1050, 12)
-  $script:BtnCancelScan.Size = New-Object System.Drawing.Size(90, 30)
-  $script:BtnCancelScan.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Right
+  $script:BtnCancelScan.Location = New-Object System.Drawing.Point(562, 12)
+  $script:BtnCancelScan.Size = New-Object System.Drawing.Size(80, 32)
   $script:BtnCancelScan.Enabled = $false
   $banner.Controls.Add($script:BtnCancelScan)
 
-  # ============ 底部日志 ============
+  $script:DiskInfo = New-Object System.Windows.Forms.Label
+  $script:DiskInfo.Text = '磁盘信息加载中...'
+  $script:DiskInfo.Font = New-Object System.Drawing.Font($script:Theme.FontUi, 9)
+  $script:DiskInfo.ForeColor = [System.Drawing.ColorTranslator]::FromHtml($script:Theme.Text)
+  $script:DiskInfo.AutoSize = $false
+  $script:DiskInfo.TextAlign = [System.Drawing.ContentAlignment]::MiddleRight
+  $script:DiskInfo.Location = New-Object System.Drawing.Point(916, 8)
+  $script:DiskInfo.Size = New-Object System.Drawing.Size(260, 20)
+  $script:DiskInfo.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Right
+  $banner.Controls.Add($script:DiskInfo)
+
+  $script:DiskBar = New-ModernProgressBar -Fill $script:Theme.Primary -Track $script:Theme.CardLine
+  # 右锚定 260px 信息块（标签+细进度条），最窄窗口时左缘 660 > 取消扫描按钮右缘 642，不重叠
+  $script:DiskBar.Location = New-Object System.Drawing.Point(916, 40)
+  $script:DiskBar.Size = New-Object System.Drawing.Size(260, 10)
+  $script:DiskBar.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Right
+  $script:DiskBar.Style = 'Continuous'
+  $banner.Controls.Add($script:DiskBar)
+
+  # ============ 底部日志（轻量化：无框、浅底、紧凑高度） ============
   $script:LogBox = New-Object System.Windows.Forms.RichTextBox
   $script:LogBox.Dock = 'Bottom'
-  $script:LogBox.Height = 150
+  $script:LogBox.Height = 110
   $script:LogBox.ReadOnly = $true
-  $script:LogBox.BackColor = [System.Drawing.Color]::White
+  $script:LogBox.BackColor = [System.Drawing.ColorTranslator]::FromHtml('#FBFBFC')
   $script:LogBox.ForeColor = [System.Drawing.ColorTranslator]::FromHtml($script:Theme.Text)
   $script:LogBox.Font = New-Object System.Drawing.Font('Consolas', 9)
-  $script:LogBox.BorderStyle = 'FixedSingle'
+  $script:LogBox.BorderStyle = 'None'
 
   function script:Log-Line {
     param([string]$Msg)
