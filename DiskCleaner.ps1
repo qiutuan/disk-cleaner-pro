@@ -1574,6 +1574,191 @@ function New-EmptyDirPage {
   return $p
 }
 
+# ---------- Tab: 系统加速 ----------
+# ntdll NtSetSystemInformation：SystemMemoryListInformation(80) 释放内存
+#   命令 5 = MemoryPurgeStandbyList（清待机内存）  命令 3 = MemoryEmptyWorkingSets（修剪工作集）
+#   均需管理员权限；失败返回非零 NTSTATUS，UI 侧只提示不崩溃
+if (-not ([System.Management.Automation.PSTypeName]'DiskCleanerPro.NativeMem').Type) {
+  Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+namespace DiskCleanerPro {
+  [StructLayout(LayoutKind.Sequential)]
+  public class MEMORYSTATUSEX {
+    public uint dwLength = (uint)Marshal.SizeOf(typeof(MEMORYSTATUSEX));
+    public uint dwMemoryLoad;
+    public ulong ullTotalPhys;
+    public ulong ullAvailPhys;
+    public ulong ullTotalPageFile;
+    public ulong ullAvailPageFile;
+    public ulong ullTotalVirtual;
+    public ulong ullAvailVirtual;
+    public ulong ullAvailExtendedVirtual;
+  }
+  public static class NativeMem {
+    [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern bool GlobalMemoryStatusEx([In, Out] MEMORYSTATUSEX b);
+    [DllImport("ntdll.dll")]
+    public static extern int NtSetSystemInformation(int cls, ref int info, int len);
+    // privilege 13 = SeProfileSingleProcessPrivilege（SystemMemoryListInformation 必需），
+    // privilege 5 = SeIncreaseQuotaPrivilege（工作集操作兜底）
+    [DllImport("ntdll.dll")]
+    public static extern int RtlAdjustPrivilege(int privilege, bool enable, bool currentThread, out bool enabled);
+  }
+}
+"@
+}
+
+function Get-MemoryInfoText {
+  # 返回 @{ Pct = 0-100; UsedBytes; TotalBytes }；调用方负责 try/catch
+  $st = New-Object DiskCleanerPro.MEMORYSTATUSEX
+  if (-not [DiskCleanerPro.NativeMem]::GlobalMemoryStatusEx($st)) {
+    return $null
+  }
+  return @{
+    Pct        = [int]$st.dwMemoryLoad
+    UsedBytes  = [long]($st.ullTotalPhys - $st.ullAvailPhys)
+    TotalBytes = [long]$st.ullTotalPhys
+  }
+}
+
+function Invoke-MemoryPurge {
+  param([int]$Command)   # 5=清待机列表 3=修剪工作集
+  # 先在进程令牌中启用所需特权（管理员身份 ≠ 特权已启用；未启用会返回 0xC0000061）
+  $enabled = $false
+  $null = [DiskCleanerPro.NativeMem]::RtlAdjustPrivilege(13, $true, $false, [ref]$enabled)
+  $i = $Command
+  $st = [DiskCleanerPro.NativeMem]::NtSetSystemInformation(80, [ref]$i, 4)
+  if ($st -ne 0) {
+    $null = [DiskCleanerPro.NativeMem]::RtlAdjustPrivilege(5, $true, $false, [ref]$enabled)
+    $i = $Command
+    $st = [DiskCleanerPro.NativeMem]::NtSetSystemInformation(80, [ref]$i, 4)
+  }
+  return $st             # 0 = STATUS_SUCCESS
+}
+
+function Test-IsAdmin {
+  try {
+    $id = [Security.Principal.WindowsIdentity]::GetCurrent()
+    return ([Security.Principal.WindowsPrincipal]::new($id)).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+  } catch { return $false }
+}
+
+function New-SysAccelPage {
+  $p = New-Object System.Windows.Forms.TabPage
+  $p.Text = '系统加速'
+  $p.BackColor = [System.Drawing.ColorTranslator]::FromHtml($script:Theme.Bg)
+
+  $card = New-Object System.Windows.Forms.Panel
+  $card.Location = New-Object System.Drawing.Point(16, 16)
+  $card.Size = New-Object System.Drawing.Size(1160, 200)
+  $card.BackColor = [System.Drawing.Color]::White
+  $p.Controls.Add($card)
+
+  $lblTitle = New-Object System.Windows.Forms.Label
+  $lblTitle.Text = '内存占用'
+  $lblTitle.Font = New-Object System.Drawing.Font($script:Theme.FontUi, 12, [System.Drawing.FontStyle]::Bold)
+  $lblTitle.Location = New-Object System.Drawing.Point(20, 16); $lblTitle.AutoSize = $true
+  $card.Controls.Add($lblTitle)
+
+  $script:LblMemPct = New-Object System.Windows.Forms.Label
+  $script:LblMemPct.Text = '--'
+  $script:LblMemPct.Font = New-Object System.Drawing.Font($script:Theme.FontUi, 16, [System.Drawing.FontStyle]::Bold)
+  $script:LblMemPct.ForeColor = [System.Drawing.ColorTranslator]::FromHtml($script:Theme.Primary)
+  $script:LblMemPct.Location = New-Object System.Drawing.Point(1020, 14); $script:LblMemPct.AutoSize = $true
+  $script:LblMemPct.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Right
+  $card.Controls.Add($script:LblMemPct)
+
+  $script:MemBar = New-ModernProgressBar
+  $script:MemBar.Location = New-Object System.Drawing.Point(20, 56)
+  $script:MemBar.Size = New-Object System.Drawing.Size(1120, 18)
+  $script:MemBar.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Right
+  $card.Controls.Add($script:MemBar)
+
+  $script:LblMemDetail = New-Object System.Windows.Forms.Label
+  $script:LblMemDetail.Text = '已用 -- / 共 --'
+  $script:LblMemDetail.Location = New-Object System.Drawing.Point(20, 84); $script:LblMemDetail.AutoSize = $true
+  $script:LblMemDetail.ForeColor = [System.Drawing.Color]::Gray
+  $card.Controls.Add($script:LblMemDetail)
+
+  $script:BtnPurgeStandby = New-ModernButton
+  $script:BtnPurgeStandby.Text = '清理待机内存'
+  $script:BtnPurgeStandby.BackColor = [System.Drawing.ColorTranslator]::FromHtml($script:Theme.Primary)
+  $script:BtnPurgeStandby.ForeColor = [System.Drawing.Color]::White; $script:BtnPurgeStandby.FlatStyle = 'Flat'
+  $script:BtnPurgeStandby.Location = New-Object System.Drawing.Point(20, 124); $script:BtnPurgeStandby.Size = New-Object System.Drawing.Size(130, 34)
+  $card.Controls.Add($script:BtnPurgeStandby)
+  $script:BtnTrimWS = New-ModernButton
+  $script:BtnTrimWS.Text = '修剪工作集'
+  $script:BtnTrimWS.BackColor = [System.Drawing.ColorTranslator]::FromHtml($script:Theme.Primary)
+  $script:BtnTrimWS.ForeColor = [System.Drawing.Color]::White; $script:BtnTrimWS.FlatStyle = 'Flat'
+  $script:BtnTrimWS.Location = New-Object System.Drawing.Point(160, 124); $script:BtnTrimWS.Size = New-Object System.Drawing.Size(120, 34)
+  $card.Controls.Add($script:BtnTrimWS)
+
+  $script:LblMemAdmin = New-Object System.Windows.Forms.Label
+  $script:LblMemAdmin.Location = New-Object System.Drawing.Point(300, 132); $script:LblMemAdmin.AutoSize = $true
+  $script:LblMemAdmin.ForeColor = [System.Drawing.Color]::Gray
+  $card.Controls.Add($script:LblMemAdmin)
+
+  $script:LblMemResult = New-Object System.Windows.Forms.Label
+  $script:LblMemResult.Location = New-Object System.Drawing.Point(20, 168); $script:LblMemResult.AutoSize = $true
+  $script:LblMemResult.ForeColor = [System.Drawing.Color]::Gray
+  $card.Controls.Add($script:LblMemResult)
+
+  # 每 2 秒刷新内存占用（轻量 P/Invoke，非 WMI）
+  $script:MemTimer = New-Object System.Windows.Forms.Timer
+  $script:MemTimer.Interval = 2000
+  $script:MemTimer.add_Tick({
+    try {
+      $mi = Get-MemoryInfoText
+      if ($mi) {
+        $script:LblMemPct.Text = ('{0}%' -f $mi.Pct)
+        $script:MemBar.Value = [Math]::Min(100, [Math]::Max(0, $mi.Pct))
+        $script:LblMemDetail.Text = ('已用 {0} / 共 {1}' -f (Format-Bytes $mi.UsedBytes), (Format-Bytes $mi.TotalBytes))
+      }
+    } catch { }
+  })
+  $script:MemTimer.Start()
+
+  $script:BtnPurgeStandby.add_Click({
+    if (-not (Test-IsAdmin)) {
+      try { [System.Windows.Forms.MessageBox]::Show('清理待机内存需要管理员权限，请以管理员身份运行本工具。', '提示', 'OK', 'Information') } catch { }
+      return
+    }
+    try {
+      $st = Invoke-MemoryPurge -Command 5
+      if ($st -eq 0) {
+        $script:LblMemResult.Text = ('待机内存已清理 {0}（{1}）' -f (Get-Date -Format 'HH:mm:ss'), 'MemoryPurgeStandbyList')
+      } else {
+        $script:LblMemResult.Text = ('清理失败：NTSTATUS 0x{0:X8}' -f $st)
+      }
+      Log-Line ('系统加速: 清理待机内存 NTSTATUS=0x{0:X8}' -f $st)
+    } catch {
+      $script:LblMemResult.Text = '清理失败：系统不支持该调用'
+      Log-Line ('系统加速: 清理待机内存异常 ' + $_.Exception.Message)
+    }
+  })
+  $script:BtnTrimWS.add_Click({
+    if (-not (Test-IsAdmin)) {
+      try { [System.Windows.Forms.MessageBox]::Show('修剪工作集需要管理员权限，请以管理员身份运行本工具。', '提示', 'OK', 'Information') } catch { }
+      return
+    }
+    try {
+      $st = Invoke-MemoryPurge -Command 3
+      if ($st -eq 0) {
+        $script:LblMemResult.Text = ('工作集已修剪 {0}（{1}）' -f (Get-Date -Format 'HH:mm:ss'), 'MemoryEmptyWorkingSets')
+      } else {
+        $script:LblMemResult.Text = ('修剪失败：NTSTATUS 0x{0:X8}' -f $st)
+      }
+      Log-Line ('系统加速: 修剪工作集 NTSTATUS=0x{0:X8}' -f $st)
+    } catch {
+      $script:LblMemResult.Text = '修剪失败：系统不支持该调用'
+      Log-Line ('系统加速: 修剪工作集异常 ' + $_.Exception.Message)
+    }
+  })
+
+  return $p
+}
+
 # ---------- Tab: 软件占用 ----------
 function Get-InstalledSoftware {
   $rows = New-Object System.Collections.Generic.List[object]
@@ -2505,9 +2690,10 @@ function New-MainWindow {
   $tabClean.Controls.Add($script:MainListView)
   $tabs.Controls.Add($tabClean)
 
-  # ===== Tab2-8 附加功能页 =====
+  # ===== Tab2-9 附加功能页 =====
   $tabs.Controls.Add((New-SpacePage))
   $tabs.Controls.Add((New-EmptyDirPage))
+  $tabs.Controls.Add((New-SysAccelPage))
   $tabs.Controls.Add((New-LargeFilesPage))
   $tabs.Controls.Add((New-SoftwarePage))
   $tabs.Controls.Add((New-DupeFilesPage))
