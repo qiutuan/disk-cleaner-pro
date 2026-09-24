@@ -2734,38 +2734,47 @@ function New-MainWindow {
   $tabClean.Width = $f.ClientSize.Width
   $tabClean.BackColor = [System.Drawing.ColorTranslator]::FromHtml($script:Theme.Bg)
 
-  # 底部操作条（先加入 Dock，占位）
+  # 底部操作条（先加入 Dock，占位）：三行布局 = 合计 / 批量选择+清理方式 / 进度条
   $actionBar = New-Object System.Windows.Forms.Panel
   $actionBar.Dock = 'Bottom'
-  $actionBar.Height = 140
+  $actionBar.Height = 132
   # 先按设计宽度设置：右锚定/拉伸子控件首次布局时按真实右缘计算
   $actionBar.Width = $f.ClientSize.Width
-  $actionBar.BackColor = [System.Drawing.Color]::White
+  $actionBar.BackColor = [System.Drawing.ColorTranslator]::FromHtml($script:Theme.CardBg)
+  # 顶部分隔细线（与白色头部呼应）
+  $actionBar.add_Paint({
+    param($s, $e)
+    try {
+      $pen = New-Object System.Drawing.Pen([System.Drawing.ColorTranslator]::FromHtml($script:Theme.CardLine))
+      $e.Graphics.DrawLine($pen, 0, 0, $s.Width, 0)
+      $pen.Dispose()
+    } catch { }
+  })
 
   $script:TotalLabel = New-Object System.Windows.Forms.Label
   $script:TotalLabel.Text = '合计可释放: 0 B'
-  $script:TotalLabel.Font = New-Object System.Drawing.Font($script:Theme.FontUi,13, [System.Drawing.FontStyle]::Bold)
+  $script:TotalLabel.Font = New-Object System.Drawing.Font($script:Theme.FontUi,12, [System.Drawing.FontStyle]::Bold)
   $script:TotalLabel.ForeColor = [System.Drawing.ColorTranslator]::FromHtml($script:Theme.Primary)
-  $script:TotalLabel.Location = New-Object System.Drawing.Point(14, 12)
+  $script:TotalLabel.Location = New-Object System.Drawing.Point(16, 10)
   $script:TotalLabel.AutoSize = $true
   $actionBar.Controls.Add($script:TotalLabel)
 
   $btnAll = New-ModernButton
   $btnAll.Text = '全选'
-  $btnAll.Location = New-Object System.Drawing.Point(12, 52)
-  $btnAll.Size = New-Object System.Drawing.Size(72, 30)
+  $btnAll.Location = New-Object System.Drawing.Point(16, 48)
+  $btnAll.Size = New-Object System.Drawing.Size(76, 30)
   $actionBar.Controls.Add($btnAll)
 
   $btnNone = New-ModernButton
   $btnNone.Text = '全不选'
-  $btnNone.Location = New-Object System.Drawing.Point(90, 52)
-  $btnNone.Size = New-Object System.Drawing.Size(72, 30)
+  $btnNone.Location = New-Object System.Drawing.Point(98, 48)
+  $btnNone.Size = New-Object System.Drawing.Size(76, 30)
   $actionBar.Controls.Add($btnNone)
 
   $btnLow = New-ModernButton
   $btnLow.Text = '仅低风险'
-  $btnLow.Location = New-Object System.Drawing.Point(168, 52)
-  $btnLow.Size = New-Object System.Drawing.Size(88, 30)
+  $btnLow.Location = New-Object System.Drawing.Point(180, 48)
+  $btnLow.Size = New-Object System.Drawing.Size(92, 30)
   $actionBar.Controls.Add($btnLow)
 
   $btnSafe = New-ModernButton
@@ -2773,21 +2782,28 @@ function New-MainWindow {
   $btnSafe.BackColor = [System.Drawing.ColorTranslator]::FromHtml($script:Theme.Green)
   $btnSafe.ForeColor = [System.Drawing.Color]::White
   $btnSafe.FlatStyle = 'Flat'
-  $btnSafe.Location = New-Object System.Drawing.Point(262, 52)
-  $btnSafe.Size = New-Object System.Drawing.Size(120, 30)
+  $btnSafe.Location = New-Object System.Drawing.Point(278, 48)
+  $btnSafe.Size = New-Object System.Drawing.Size(130, 30)
   $actionBar.Controls.Add($btnSafe)
+
+  $delModeLabel = New-Object System.Windows.Forms.Label
+  $delModeLabel.Text = '删除方式:'
+  $delModeLabel.ForeColor = [System.Drawing.ColorTranslator]::FromHtml($script:Theme.SubText)
+  $delModeLabel.Location = New-Object System.Drawing.Point(16, 97)
+  $delModeLabel.AutoSize = $true
+  $actionBar.Controls.Add($delModeLabel)
 
   $rbRecycle = New-Object System.Windows.Forms.RadioButton
   $rbRecycle.Text = '移到回收站 (可恢复)'
   $rbRecycle.Checked = $true
-  $rbRecycle.Location = New-Object System.Drawing.Point(250, 12)
+  $rbRecycle.Location = New-Object System.Drawing.Point(86, 97)
   $rbRecycle.AutoSize = $true
   $actionBar.Controls.Add($rbRecycle)
 
   $script:RbPermanent = New-Object System.Windows.Forms.RadioButton
   $script:RbPermanent.Text = '永久删除 (不可恢复)'
   $script:RbPermanent.ForeColor = [System.Drawing.ColorTranslator]::FromHtml($script:Theme.Red)
-  $script:RbPermanent.Location = New-Object System.Drawing.Point(430, 12)
+  $script:RbPermanent.Location = New-Object System.Drawing.Point(238, 97)
   $script:RbPermanent.AutoSize = $true
   $actionBar.Controls.Add($script:RbPermanent)
 
@@ -2797,30 +2813,30 @@ function New-MainWindow {
   $script:BtnClean.ForeColor = [System.Drawing.Color]::White
   $script:BtnClean.Font = New-Object System.Drawing.Font($script:Theme.FontUi,12, [System.Drawing.FontStyle]::Bold)
   $script:BtnClean.FlatStyle = 'Flat'
-  $script:BtnClean.Location = New-Object System.Drawing.Point(940, 12)
-  $script:BtnClean.Size = New-Object System.Drawing.Size(140, 56)
+  $script:BtnClean.Location = New-Object System.Drawing.Point(1034, 16)
+  $script:BtnClean.Size = New-Object System.Drawing.Size(150, 60)
   $script:BtnClean.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Right
   $actionBar.Controls.Add($script:BtnClean)
 
   $script:BtnCancelClean = New-ModernButton
   $script:BtnCancelClean.Text = '取消'
-  $script:BtnCancelClean.Location = New-Object System.Drawing.Point(860, 12)
-  $script:BtnCancelClean.Size = New-Object System.Drawing.Size(70, 56)
+  $script:BtnCancelClean.Location = New-Object System.Drawing.Point(954, 16)
+  $script:BtnCancelClean.Size = New-Object System.Drawing.Size(70, 60)
   $script:BtnCancelClean.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Right
   $script:BtnCancelClean.Enabled = $false
   $actionBar.Controls.Add($script:BtnCancelClean)
 
   $script:CleanBar = New-ModernProgressBar
-  # 进度条左|右锚定：左右留白各 12px（第3行），缩小时拉伸
-  $script:CleanBar.Location = New-Object System.Drawing.Point(12, 122)
-  $script:CleanBar.Size = New-Object System.Drawing.Size(1100, 16)
+  # 进度条左|右锚定：左右留白各 16px（第3行），缩小时拉伸
+  $script:CleanBar.Location = New-Object System.Drawing.Point(16, 120)
+  $script:CleanBar.Size = New-Object System.Drawing.Size(1168, 8)
   $script:CleanBar.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Right
   $actionBar.Controls.Add($script:CleanBar)
 
   $script:CleanStatus = New-Object System.Windows.Forms.Label
   $script:CleanStatus.Text = '就绪'
-  $script:CleanStatus.ForeColor = [System.Drawing.ColorTranslator]::FromHtml($script:Theme.Text)
-  $script:CleanStatus.Location = New-Object System.Drawing.Point(430, 100)
+  $script:CleanStatus.ForeColor = [System.Drawing.ColorTranslator]::FromHtml($script:Theme.SubText)
+  $script:CleanStatus.Location = New-Object System.Drawing.Point(420, 101)
   $script:CleanStatus.AutoSize = $true
   $actionBar.Controls.Add($script:CleanStatus)
 
