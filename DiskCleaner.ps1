@@ -860,6 +860,291 @@ function Get-FileHashSha256Partial {
   } catch { return $null }
 }
 
+# ---------- Tab: 空间分析（WizTree 式目录占用浏览器） ----------
+function Get-DirSizes {
+  # 全盘迭代扫描：每个目录的直接文件字节合计（不含子目录内容）；跳过重解析点
+  param([string]$Root, [System.ComponentModel.BackgroundWorker]$W)
+  $own = New-Object 'System.Collections.Generic.Dictionary[string,long]'
+  $stack = New-Object System.Collections.Generic.Stack[string]
+  $stack.Push($Root)
+  $dirs = 0
+  while ($stack.Count -gt 0) {
+    if ($W -and $W.CancellationPending) { return $null }
+    $dir = $stack.Pop()
+    $bytes = 0L
+    try {
+      $di = [IO.DirectoryInfo]::new($dir)
+      if ($di.Attributes -band [IO.FileAttributes]::ReparsePoint) { continue }
+      foreach ($f in [IO.Directory]::EnumerateFiles($dir)) {
+        try { $bytes += ([IO.FileInfo]::new($f)).Length } catch { }
+      }
+      foreach ($d in [IO.Directory]::EnumerateDirectories($dir)) {
+        try {
+          if (([IO.DirectoryInfo]::new($d)).Attributes -band [IO.FileAttributes]::ReparsePoint) { continue }
+          $stack.Push($d)
+        } catch { }
+      }
+    } catch { }
+    $own[$dir] = $bytes
+    $dirs++
+    if (($dirs % 500) -eq 0 -and $W) { $W.ReportProgress(0, ("已扫描 {0} 个目录..." -f $dirs)) }
+  }
+  return $own
+}
+
+function Get-MergedDirTotals {
+  # 自底向上聚合：total[dir] = dir 及全部子孙的直接文件字节合计
+  # 第一遍按长度倒序预建全部条目（total=own）；第二遍按同一顺序把每个目录的 total
+  # 累加进其父（长度倒序保证子目录先于父目录被累加）
+  param([System.Collections.Generic.Dictionary[string,long]]$Own)
+  $total = New-Object 'System.Collections.Generic.Dictionary[string,long]'
+  $keys = [string[]]$Own.Keys
+  $cmp = [System.Comparison[string]] { param($a, $b) $b.Length.CompareTo($a.Length) }
+  [System.Array]::Sort($keys, $cmp)
+  foreach ($k in $keys) { $total[$k] = $Own[$k] }
+  foreach ($k in $keys) {
+    $pi = $k.LastIndexOf('\')
+    if ($pi -gt 2) {   # 排除 "C:\" 盘根自身（无父目录可累加）
+      $parent = $k.Substring(0, $pi)
+      if ($total.ContainsKey($parent)) { $total[$parent] += $total[$k] }
+    }
+  }
+  return $total
+}
+
+function New-SpacePage {
+  $p = New-Object System.Windows.Forms.TabPage
+  $p.Text = '空间分析'
+  $p.BackColor = [System.Drawing.ColorTranslator]::FromHtml($script:Theme.Bg)
+  $p.Width = 1200
+
+  $top = New-Object System.Windows.Forms.Panel
+  $top.Dock = 'Top'; $top.Height = 44; $top.BackColor = [System.Drawing.Color]::White
+
+  $lblDrv2 = New-Object System.Windows.Forms.Label
+  $lblDrv2.Text = '磁盘:'; $lblDrv2.Location = New-Object System.Drawing.Point(12, 13); $lblDrv2.AutoSize = $true
+  $top.Controls.Add($lblDrv2)
+  $script:CmbSpaceDrive = New-Object System.Windows.Forms.ComboBox
+  $script:CmbSpaceDrive.Location = New-Object System.Drawing.Point(52, 10); $script:CmbSpaceDrive.Width = 66
+  foreach ($d in (Get-FixedDrives)) { $null = $script:CmbSpaceDrive.Items.Add($d) }
+  if ($script:CmbSpaceDrive.Items.Count -gt 0) { $script:CmbSpaceDrive.SelectedIndex = 0 }
+  $top.Controls.Add($script:CmbSpaceDrive)
+
+  $script:BtnSpaceScan = New-ModernButton
+  $script:BtnSpaceScan.Text = '开始扫描'
+  $script:BtnSpaceScan.BackColor = [System.Drawing.ColorTranslator]::FromHtml($script:Theme.Primary)
+  $script:BtnSpaceScan.ForeColor = [System.Drawing.Color]::White; $script:BtnSpaceScan.FlatStyle = 'Flat'
+  $script:BtnSpaceScan.Location = New-Object System.Drawing.Point(126, 8); $script:BtnSpaceScan.Size = New-Object System.Drawing.Size(90, 28)
+  $top.Controls.Add($script:BtnSpaceScan)
+  $script:BtnSpaceStop = New-ModernButton
+  $script:BtnSpaceStop.Text = '停止'
+  $script:BtnSpaceStop.Location = New-Object System.Drawing.Point(222, 8); $script:BtnSpaceStop.Size = New-Object System.Drawing.Size(60, 28); $script:BtnSpaceStop.Enabled = $false
+  $top.Controls.Add($script:BtnSpaceStop)
+  $script:BtnSpaceUp = New-ModernButton
+  $script:BtnSpaceUp.Text = '上级目录'
+  $script:BtnSpaceUp.Location = New-Object System.Drawing.Point(288, 8); $script:BtnSpaceUp.Size = New-Object System.Drawing.Size(76, 28); $script:BtnSpaceUp.Enabled = $false
+  $top.Controls.Add($script:BtnSpaceUp)
+  $script:ProgSpace = New-ModernProgressBar
+  $script:ProgSpace.Location = New-Object System.Drawing.Point(372, 13); $script:ProgSpace.Size = New-Object System.Drawing.Size(200, 16)
+  $top.Controls.Add($script:ProgSpace)
+  $script:LblSpaceStatus = New-Object System.Windows.Forms.Label
+  $script:LblSpaceStatus.Text = '就绪'; $script:LblSpaceStatus.Location = New-Object System.Drawing.Point(580, 14); $script:LblSpaceStatus.AutoSize = $true
+  $top.Controls.Add($script:LblSpaceStatus)
+
+  $script:LblSpacePath = New-Object System.Windows.Forms.Label
+  $script:LblSpacePath.Text = '（扫描后双击目录逐级下钻）'
+  $script:LblSpacePath.Font = New-Object System.Drawing.Font('Consolas', 9, [System.Drawing.FontStyle]::Bold)
+  $script:LblSpacePath.ForeColor = [System.Drawing.ColorTranslator]::FromHtml($script:Theme.Primary)
+  $script:LblSpacePath.Location = New-Object System.Drawing.Point(592, 14)
+  $script:LblSpacePath.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Right
+  $script:LblSpacePath.AutoEllipsis = $true
+  $top.Controls.Add($script:LblSpacePath)
+
+  $script:LvSpace = New-Object System.Windows.Forms.ListView
+  $script:LvSpace.Dock = 'Fill'
+  $script:LvSpace.View = 'Details'; $script:LvSpace.FullRowSelect = $true; $script:LvSpace.GridLines = $false; $script:LvSpace.HideSelection = $false
+  $script:LvSpace.UseCompatibleStateImageBehavior = $false
+  $null = $script:LvSpace.Columns.Add('名称', 260)
+  $null = $script:LvSpace.Columns.Add('总占用', 110)
+  $null = $script:LvSpace.Columns.Add('占比', 70)
+  $null = $script:LvSpace.Columns.Add('自身文件', 110)
+  $null = $script:LvSpace.Columns.Add('完整路径', 540)
+
+  $foot = New-Object System.Windows.Forms.Panel
+  $foot.Dock = 'Bottom'; $foot.Height = 48; $foot.BackColor = [System.Drawing.Color]::White
+  $foot.Width = 1200
+  $script:LblSpaceHint = New-Object System.Windows.Forms.Label
+  $script:LblSpaceHint.Text = '双击行进入目录；右键可打开/复制/删除到回收站。'
+  $script:LblSpaceHint.ForeColor = [System.Drawing.ColorTranslator]::FromHtml($script:Theme.Text)
+  $script:LblSpaceHint.Location = New-Object System.Drawing.Point(12, 15); $script:LblSpaceHint.AutoSize = $true
+  $foot.Controls.Add($script:LblSpaceHint)
+  $script:BtnSpaceDel = New-ModernButton
+  $script:BtnSpaceDel.Text = '删除选中(回收站)'
+  $script:BtnSpaceDel.BackColor = [System.Drawing.ColorTranslator]::FromHtml($script:Theme.Red)
+  $script:BtnSpaceDel.ForeColor = [System.Drawing.Color]::White; $script:BtnSpaceDel.FlatStyle = 'Flat'
+  $script:BtnSpaceDel.Location = New-Object System.Drawing.Point(1030, 9); $script:BtnSpaceDel.Size = New-Object System.Drawing.Size(140, 30)
+  $script:BtnSpaceDel.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Right
+  $foot.Controls.Add($script:BtnSpaceDel)
+
+  $p.Controls.Add($foot)
+  $p.Controls.Add($top)
+  $p.Controls.Add($script:LvSpace)
+
+  $menuSp = New-Object System.Windows.Forms.ContextMenuStrip
+  $miSpOpen = New-Object System.Windows.Forms.ToolStripMenuItem('打开所在文件夹')
+  $miSpCopy = New-Object System.Windows.Forms.ToolStripMenuItem('复制路径')
+  $miSpDel = New-Object System.Windows.Forms.ToolStripMenuItem('删除到回收站')
+  $null = $menuSp.Items.Add($miSpOpen); $null = $menuSp.Items.Add($miSpCopy); $null = $menuSp.Items.Add($miSpDel)
+  $script:LvSpace.ContextMenuStrip = $menuSp
+
+  $script:SpaceOwn = $null     # Dictionary[dir] = 直接文件字节
+  $script:SpaceTotal = $null   # Dictionary[dir] = 含子孙合计字节
+  $script:SpaceDir = $null     # 当前浏览目录
+
+  function script:Space-FillChildren {
+    param([string]$Dir)
+    if (-not $script:SpaceTotal) { return }
+    if (-not $script:SpaceTotal.ContainsKey($Dir)) { return }
+    $script:SpaceDir = $Dir
+    $script:LblSpacePath.Text = $Dir
+    $dirTotal = $script:SpaceTotal[$Dir]
+    $script:BtnSpaceUp.Enabled = ($Dir.LastIndexOf('\') -gt 2)
+    $script:LvSpace.BeginUpdate()
+    $script:LvSpace.Items.Clear()
+    $kids = New-Object System.Collections.Generic.List[object]
+    foreach ($k in $script:SpaceTotal.Keys) {
+      if ($k.Length -gt $Dir.Length -and $k.StartsWith($Dir, 'OrdinalIgnoreCase')) {
+        $rest = $k.Substring($Dir.Length)
+        if ($rest.StartsWith('\') -and ($rest.IndexOf('\', 1) -lt 0)) {
+          $kids.Add([pscustomobject]@{ Path = $k; Name = $rest.Substring(1) })
+        }
+      }
+    }
+    foreach ($kd in ($kids | Sort-Object { -$script:SpaceTotal[$_.Path] })) {
+      $tot = $script:SpaceTotal[$kd.Path]
+      $ownB = if ($script:SpaceOwn.ContainsKey($kd.Path)) { $script:SpaceOwn[$kd.Path] } else { 0L }
+      $pct = if ($dirTotal -gt 0) { ('{0:P1}' -f ($tot / $dirTotal)) } else { '' }
+      $li = [System.Windows.Forms.ListViewItem]::new([string[]]@($kd.Name, (Format-Bytes $tot), $pct, (Format-Bytes $ownB), $kd.Path))
+      $li.Tag = $kd.Path
+      if ($tot -gt 1GB) { $li.ForeColor = [System.Drawing.ColorTranslator]::FromHtml($script:Theme.Red) }
+      elseif ($tot -gt 100MB) { $li.ForeColor = [System.Drawing.ColorTranslator]::FromHtml($script:Theme.Yellow) }
+      else { $li.ForeColor = [System.Drawing.ColorTranslator]::FromHtml($script:Theme.Green) }
+      $null = $script:LvSpace.Items.Add($li)
+    }
+    $script:LvSpace.EndUpdate()
+    $script:LblSpaceStatus.Text = ('当前目录合计: {0}' -f (Format-Bytes $dirTotal))
+  }
+
+  $script:SpaceWorker = New-Object System.ComponentModel.BackgroundWorker
+  $script:SpaceWorker.WorkerSupportsCancellation = $true
+  $script:SpaceWorker.WorkerReportsProgress = $true
+  $spaceDoWork = {
+    param($s, $e)
+    $own = Get-DirSizes -Root ([string]$e.Argument) -W $s
+    if ($s.CancellationPending) { $e.Cancel = $true; return }
+    $e.Result = @{ Own = $own; Total = (Get-MergedDirTotals $own) }
+  }
+  Register-WorkerBody -Worker $script:SpaceWorker -Name 'Space' -ScriptBlock $spaceDoWork
+  $script:SpaceWorker.add_ProgressChanged({
+    param($s, $e)
+    $script:LblSpaceStatus.Text = [string]$e.UserState
+  })
+  $script:SpaceWorker.add_RunWorkerCompleted({
+    param($s, $e)
+    $script:BtnSpaceScan.Enabled = $true; $script:BtnSpaceStop.Enabled = $false
+    $script:ProgSpace.Style = 'Continuous'; $script:ProgSpace.Value = 0
+    if ($e.Error) { $script:LblSpaceStatus.Text = '扫描出错'; Log-Line ('空间分析出错: ' + $e.Error.Message); return }
+    if ($e.Cancelled) { $script:LblSpaceStatus.Text = '已取消'; return }
+    $script:SpaceOwn = $e.Result.Own
+    $script:SpaceTotal = $e.Result.Total
+    $root = [string]$script:CmbSpaceDrive.SelectedItem + '\'
+    if (-not $script:SpaceTotal.ContainsKey($root)) { $root = $root.TrimEnd('\') }
+    Space-FillChildren $root
+    Log-Line ('空间分析完成: {0} 共 {1} 个目录' -f $script:CmbSpaceDrive.SelectedItem, $script:SpaceTotal.Count)
+  })
+
+  $script:BtnSpaceScan.add_Click({
+    $drive = [string]$script:CmbSpaceDrive.SelectedItem
+    if (-not $drive) {
+      try { [System.Windows.Forms.MessageBox]::Show('请先选择磁盘。', '提示', 'OK', 'Information') } catch { }
+      return
+    }
+    $script:BtnSpaceScan.Enabled = $false; $script:BtnSpaceStop.Enabled = $true
+    $script:ProgSpace.Style = 'Marquee'; $script:ProgSpace.MarqueeAnimationSpeed = 30
+    $script:LblSpaceStatus.Text = '扫描中...'
+    $script:LvSpace.Items.Clear(); $script:SpaceOwn = $null; $script:SpaceTotal = $null
+    Log-Line ('空间分析扫描开始: ' + $drive)
+    $script:SpaceWorker.RunWorkerAsync(($drive + '\'))
+  })
+  $script:BtnSpaceStop.add_Click({ $script:SpaceWorker.CancelAsync() })
+  $script:BtnSpaceUp.add_Click({
+    if ($script:SpaceDir) {
+      $pi = $script:SpaceDir.LastIndexOf('\')
+      if ($pi -gt 2) {
+        $up = $script:SpaceDir.Substring(0, $pi)
+        if (-not $up.EndsWith('\')) { $up += '\' }
+        Space-FillChildren $up
+      } elseif ($pi -eq 2) {
+        Space-FillChildren ($script:SpaceDir.Substring(0, 3))
+      }
+    }
+  })
+  $script:LvSpace.add_DoubleClick({
+    if ($script:LvSpace.SelectedItems.Count -gt 0) {
+      $path = [string]$script:LvSpace.SelectedItems[0].Tag
+      if ($script:SpaceTotal -and $script:SpaceTotal.ContainsKey($path)) { Space-FillChildren $path }
+    }
+  })
+  $miSpOpen.add_Click({
+    if ($script:LvSpace.SelectedItems.Count -gt 0) { Open-InExplorer -Path ([string]$script:LvSpace.SelectedItems[0].Tag) -Select }
+  })
+  $miSpCopy.add_Click({
+    if ($script:LvSpace.SelectedItems.Count -gt 0) {
+      try { [System.Windows.Forms.Clipboard]::SetText([string]$script:LvSpace.SelectedItems[0].Tag) } catch { }
+    }
+  })
+  $script:BtnSpaceDel.add_Click({
+    $sel = @($script:LvSpace.SelectedItems)
+    if ($sel.Count -eq 0) {
+      try { [System.Windows.Forms.MessageBox]::Show('请先选择要删除的目录。', '提示', 'OK', 'Information') } catch { }
+      return
+    }
+    $r = [System.Windows.Forms.MessageBox]::Show(('确定将选中的 {0} 个目录删除到回收站？' -f $sel.Count), '确认删除', 'YesNo', 'Warning')
+    if ($r -ne 'Yes') { return }
+    $rel = 0L; $ok = 0
+    foreach ($li in $sel) {
+      $path = [string]$li.Tag
+      $b = Remove-UserPathToRecycle $path
+      if ($b -gt 0) { $ok++; $rel += $b }
+      # 从索引中移除该目录及其子孙，并把释放量从各级祖先合计中扣减
+      try {
+        foreach ($k in @($script:SpaceTotal.Keys)) {
+          if ($k -eq $path -or $k.StartsWith($path + '\', 'OrdinalIgnoreCase')) {
+            $script:SpaceTotal.Remove($k)
+            if ($script:SpaceOwn.ContainsKey($k)) { $script:SpaceOwn.Remove($k) }
+          }
+        }
+        $cur = $path
+        while ($true) {
+          $pi = $cur.LastIndexOf('\')
+          if ($pi -lt 2) { break }
+          $cur = $cur.Substring(0, $pi)
+          if ($script:SpaceTotal.ContainsKey($cur)) { $script:SpaceTotal[$cur] -= $b }
+          if ($cur.EndsWith('\')) { break }
+        }
+      } catch { }
+    }
+    Log-Line ('空间分析删除: 成功 {0}/{1}, 释放 {2}' -f $ok, $sel.Count, (Format-Bytes $rel))
+    if ($script:SpaceDir) { Space-FillChildren $script:SpaceDir }
+    try {
+      [System.Windows.Forms.MessageBox]::Show(('已删除 {0} 个目录，释放 {1}；占用/受保护自动跳过。' -f $ok, (Format-Bytes $rel)), '完成', 'OK', 'Information')
+    } catch { }
+  })
+  $miSpDel.add_Click({ $script:BtnSpaceDel.PerformClick() })
+
+  return $p
+}
+
 # ---------- Tab: 大文件分析 ----------
 function Get-LargeFiles {
   # 迭代(栈)遍历目标盘，收集 >= 阈值的文件；跳过重解析点与系统巨型目录
@@ -1982,7 +2267,8 @@ function New-MainWindow {
   $tabClean.Controls.Add($script:MainListView)
   $tabs.Controls.Add($tabClean)
 
-  # ===== Tab2-6 附加功能页 =====
+  # ===== Tab2-7 附加功能页 =====
+  $tabs.Controls.Add((New-SpacePage))
   $tabs.Controls.Add((New-LargeFilesPage))
   $tabs.Controls.Add((New-SoftwarePage))
   $tabs.Controls.Add((New-DupeFilesPage))
