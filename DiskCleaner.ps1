@@ -795,6 +795,38 @@ function Invoke-SafeDelete {
   }
   return [pscustomobject]@{ Name = $Item.name; Released = $released; Skipped = $skipped }
 }
+
+function Export-CleanReport {
+  # 清理完成后自动导出 CSV 报告到 runtime\reports（写入仅限工具目录内，UTF-8 BOM 便于 Excel 打开）
+  param(
+    [object[]]$Details,
+    [long]$Planned = 0,
+    [long]$Released = 0,
+    [int]$Skipped = 0,
+    [string]$Mode = 'Recycle',
+    [string]$Note = ''
+  )
+  try {
+    $dir = Join-Path $script:DataDir 'reports'
+    if (-not (Test-Path -LiteralPath $dir)) { $null = New-Item -ItemType Directory -Path $dir -Force }
+    $file = Join-Path $dir ('clean-{0}.csv' -f (Get-Date -Format 'yyyyMMdd-HHmmss'))
+    $ts = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
+    $lines = [System.Collections.Generic.List[string]]::new()
+    $lines.Add('时间,模式,项目,分类,风险,计划大小(字节),实际释放(字节),跳过数')
+    foreach ($d in $Details) {
+      $name = '"' + ([string]$d.Name -replace '"', '""') + '"'
+      $lines.Add(('{0},{1},{2},{3},{4},{5},{6},{7}' -f $ts, $Mode, $name,
+        [string]$d.Category, [string]$d.Risk, [long]$d.Size, [long]$d.Released, [int]$d.Skipped))
+    }
+    $lines.Add(('{0},{1},"合计",,,{2},{3},{4}' -f $ts, $Mode, $Planned, $Released, $Skipped))
+    if ($Note) { $lines.Add(('{0},{1},"备注: {2}",,,0,0,0' -f $ts, $Mode, ($Note -replace '"', '""'))) }
+    [IO.File]::WriteAllLines($file, $lines, (New-Object System.Text.UTF8Encoding $true))
+    return $file
+  } catch {
+    Write-CleanLog ('清理报告导出失败: ' + $_.Exception.Message)
+    return $null
+  }
+}
 #endregion
 
 #region UI 工具（字节格式化 / 风险色 / 占位页）
@@ -2904,6 +2936,7 @@ function New-MainWindow {
     $arg = $e.Argument
     $mode = $arg.Mode
     $totalPlanned = 0L; $totalReleased = 0L; $skippedTotal = 0; $done = 0
+    $rows = New-Object System.Collections.Generic.List[object]
     foreach ($it in $arg.Items) {
       if ($s.CancellationPending) { $e.Cancel = $true; break }
       $planned = Get-ItemSize $it -Force
@@ -2911,10 +2944,18 @@ function New-MainWindow {
       $totalPlanned += [long]$planned
       $totalReleased += [long]$r.Released
       $skippedTotal += [int]$r.Skipped
+      $rows.Add([pscustomobject]@{
+        Name     = [string]$it.name
+        Category = [string]$it.category
+        Risk     = [string]$it.risk
+        Size     = [long]$planned
+        Released = [long]$r.Released
+        Skipped  = [int]$r.Skipped
+      })
       $done++
       $s.ReportProgress([int](100.0 * $done / $arg.Items.Count), ('{0}  释放 {1}' -f $it.name, (Format-Bytes $r.Released)))
     }
-    $e.Result = @{ Planned = $totalPlanned; Released = $totalReleased; Skipped = $skippedTotal }
+    $e.Result = @{ Planned = $totalPlanned; Released = $totalReleased; Skipped = $skippedTotal; Details = $rows }
   }
   Register-WorkerBody -Worker $script:CleanWorker -Name 'Clean' -ScriptBlock $cleanDoWork
   $script:CleanWorker.add_ProgressChanged({
@@ -2938,10 +2979,20 @@ function New-MainWindow {
     if ($e.Cancelled) {
       $script:CleanStatus.Text = '已取消'
       Log-Line '清理已取消（已完成部分保留）'
+      try {
+        $res2 = $e.Result
+        if ($res2 -and $res2.Details) {
+          $rep2 = Export-CleanReport -Details $res2.Details -Planned $res2.Planned -Released $res2.Released -Skipped $res2.Skipped -Mode $script:Settings.DeleteMode -Note '已取消，仅含完成部分'
+          if ($rep2) { Log-Line ('清理报告已导出: ' + $rep2) }
+        }
+      } catch { }
     } else {
       $res = $e.Result
       $script:CleanStatus.Text = '清理完成'
       Log-Line ('清理完成: 计划释放 ' + (Format-Bytes $res.Planned) + ' / 实际释放 ' + (Format-Bytes $res.Released) + ' / 跳过 ' + $res.Skipped)
+      # 自动导出清理报告（含已取消时的已完成部分）
+      $rep = Export-CleanReport -Details $res.Details -Planned $res.Planned -Released $res.Released -Skipped $res.Skipped -Mode $script:Settings.DeleteMode
+      if ($rep) { Log-Line ('清理报告已导出: ' + $rep) }
       try {
         [System.Windows.Forms.MessageBox]::Show(
           ('清理完成' + "`r`n`r`n计划释放: {0}`r`n实际释放: {1}`r`n跳过占用/受保护: {2}" -f (Format-Bytes $res.Planned), (Format-Bytes $res.Released), $res.Skipped),
