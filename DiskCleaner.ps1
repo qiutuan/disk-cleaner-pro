@@ -314,12 +314,20 @@ function Get-ExpandedPaths {
 #endregion
 
 #region 白名单闸门（安全底线：受保护路径绝对不删）
-$script:StaticWhitelist = @(
+# 两层语义：
+#   ProtectedRoots  = 受保护根。目标是根自身或其祖先 → 禁止（防删盘根/用户主目录/WINDIR
+#                     根/ProgramData/ProgramFiles 根/工具自身目录及其祖先链）。
+#                     注意：根的"内部"不在此层拦截，否则用户 Temp 等核心清理项全被误拦。
+#   ForbiddenSubtrees = 禁止子树。目标位于其内部 → 一律禁止（System32/WinSxS/assembly/
+#                     SysWOW64/卷信息/回收站/启动菜单/恢复分区/引导与页面文件等）。
+$script:ProtectedRoots = @(
   'C:\', 'D:\', 'E:\', 'F:\', 'G:\', 'H:\', 'I:\', 'J:\', 'K:\', 'L:\',
-  "$env:WINDIR", "$env:WINDIR\System32", "$env:WINDIR\WinSxS",
+  "$env:WINDIR", "$env:USERPROFILE",
+  "$env:ProgramFiles", "${env:ProgramFiles(x86)}", "$env:ProgramData"
+)
+$script:ForbiddenSubtrees = @(
+  "$env:WINDIR\System32", "$env:WINDIR\WinSxS",
   "$env:WINDIR\assembly", "$env:WINDIR\SysWOW64",
-  "$env:USERPROFILE",
-  "$env:ProgramFiles", "${env:ProgramFiles(x86)}", "$env:ProgramData",
   "$env:SystemDrive\ProgramData\Microsoft\Windows\Start Menu",
   "$env:SystemDrive\ProgramData\Microsoft\Windows\Recovery",
   "$env:SystemDrive\System Volume Information",
@@ -337,14 +345,19 @@ function Test-Whitelist {
   if (-not $FullPath) { return $false }
   try { $fp = [IO.Path]::GetFullPath($FullPath).TrimEnd('\') + '\' } catch { return $false }
   # 显式放行工具自建的可丢弃测试数据（testdata，仅自测用、无真实数据），
-  # 须在静态/动态白名单判断之前短路，否则会被盘根(G:\)等规则拦死
+  # 须在受保护根/禁止子树判断之前短路，否则会被盘根(G:\)等规则拦死
   $testArea = Join-Path $script:ToolRoot 'testdata'
   try { $ta = [IO.Path]::GetFullPath($testArea).TrimEnd('\') + '\' } catch { $ta = '' }
   if ($ta -and $fp.StartsWith($ta, 'OrdinalIgnoreCase')) { return $true }
-  foreach ($w in ($script:StaticWhitelist + $script:DynamicWhitelist)) {
+  # 规则1：目标是受保护根自身或其祖先（含工具目录祖先链）→ 禁止
+  foreach ($w in ($script:ProtectedRoots + $script:DynamicWhitelist)) {
     try { $we = [IO.Path]::GetFullPath((Expand-EnvPath $w)).TrimEnd('\') + '\' } catch { continue }
-    if ($fp.StartsWith($we, 'OrdinalIgnoreCase')) { return $false }  # 目标位于白名单内 → 禁止
-    if ($we.StartsWith($fp, 'OrdinalIgnoreCase')) { return $false }  # 目标是白名单祖先(如盘根) → 禁止
+    if ($we.StartsWith($fp, 'OrdinalIgnoreCase')) { return $false }
+  }
+  # 规则2：目标位于禁止子树内（System32/WinSxS/卷信息/回收站等）→ 一律禁止
+  foreach ($w in $script:ForbiddenSubtrees) {
+    try { $we = [IO.Path]::GetFullPath((Expand-EnvPath $w)).TrimEnd('\') + '\' } catch { continue }
+    if ($fp.StartsWith($we, 'OrdinalIgnoreCase')) { return $false }
   }
   return $true
 }
