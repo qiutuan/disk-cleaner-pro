@@ -29,6 +29,10 @@ $script:Theme = @{
   Red       = '#E53935'   # 需确认
   Text      = '#3E2723'   # 主文字（深棕）
   Disabled  = '#BDBDBD'
+  FontUi    = 'Microsoft YaHei UI'   # 界面统一字体（Win11 风格）
+  CardBg    = '#FFFFFF'   # 卡片/面板背景
+  CardLine  = '#F0E2D0'   # 面板分隔线
+  LightBtn  = '#FBE7CC'   # 浅橙副按钮（深色文字）
 }
 #endregion
 
@@ -49,6 +53,197 @@ function Write-CleanLog {
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 Add-Type -AssemblyName Microsoft.VisualBasic   # 回收站删除 API
+#endregion
+
+#region 现代控件（Win11 风格：圆角按钮 / 圆角进度条 / 卡片面板，纯代码绘制无图片）
+# 视觉样式必须在创建任何控件之前开启一次（幂等，worker runspace 中重复调用无副作用）
+try { [System.Windows.Forms.Application]::EnableVisualStyles() } catch { }
+if (-not ('DiskCleaner.ModernButton' -as [type])) {
+# .NET 下 WinForms/绘图类型分散在多个私有程序集（System.Private.Windows.* 等），
+# 逐个引用易漏；此处直接把进程已加载的全部程序集作为编译引用，简单可靠
+$uiRefs = [System.AppDomain]::CurrentDomain.GetAssemblies() |
+  Where-Object { $_.Location } | ForEach-Object { $_.Location } | Sort-Object -Unique
+Add-Type -ReferencedAssemblies $uiRefs -TypeDefinition @'
+using System;
+using System.Drawing;
+using System.Drawing.Drawing2D;
+using System.Windows.Forms;
+namespace DiskCleaner {
+  public static class Ui {
+    internal static GraphicsPath Rounded(Rectangle r, int rad) {
+      int d = rad * 2;
+      if (d > r.Width) d = r.Width;
+      if (d > r.Height) d = r.Height;
+      GraphicsPath p = new GraphicsPath();
+      p.AddArc(r.X, r.Y, d, d, 180, 90);
+      p.AddArc(r.Right - d, r.Y, d, d, 270, 90);
+      p.AddArc(r.Right - d, r.Bottom - d, d, d, 0, 90);
+      p.AddArc(r.X, r.Bottom - d, d, d, 90, 90);
+      p.CloseFigure();
+      return p;
+    }
+    internal static Color Shift(Color c, int amt) {
+      return Color.FromArgb(Math.Max(0, Math.Min(255, c.R + amt)),
+                            Math.Max(0, Math.Min(255, c.G + amt)),
+                            Math.Max(0, Math.Min(255, c.B + amt)));
+    }
+    internal static bool IsDark(Color c) {
+      return (0.299 * c.R + 0.587 * c.G + 0.114 * c.B) < 140;
+    }
+  }
+  // 圆角按钮：深色底悬停提亮、浅色底悬停加深；禁用自动置灰
+  public class ModernButton : Button {
+    private int _radius = 6;
+    private Color _hover = Color.Empty;
+    private Color _press = Color.Empty;
+    private bool _isHover;
+    private bool _isDown;
+    public ModernButton() {
+      SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint |
+               ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
+      BackColor = Color.FromArgb(0xFB, 0xE7, 0xCC);
+      ForeColor = Color.FromArgb(0x6D, 0x4C, 0x41);
+      FlatStyle = FlatStyle.Flat;
+      FlatAppearance.BorderSize = 0;
+    }
+    public int Radius { get { return _radius; } set { _radius = value; Invalidate(); } }
+    public Color HoverBackColor { get { return _hover; } set { _hover = value; Invalidate(); } }
+    public Color PressBackColor { get { return _press; } set { _press = value; Invalidate(); } }
+    protected override void OnMouseEnter(EventArgs e) { base.OnMouseEnter(e); _isHover = true; Invalidate(); }
+    protected override void OnMouseLeave(EventArgs e) { base.OnMouseLeave(e); _isHover = false; Invalidate(); }
+    protected override void OnMouseDown(MouseEventArgs me) { base.OnMouseDown(me); _isDown = true; Invalidate(); }
+    protected override void OnMouseUp(MouseEventArgs me) { base.OnMouseUp(me); _isDown = false; Invalidate(); }
+    protected override void OnPaint(PaintEventArgs e) {
+      e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+      Rectangle r = new Rectangle(0, 0, Width - 1, Height - 1);
+      Color fill = Enabled ? BackColor : Color.FromArgb(0xEC, 0xEC, 0xEC);
+      if (Enabled && _isDown) {
+        fill = (_press != Color.Empty) ? _press : (Ui.IsDark(BackColor) ? Ui.Shift(BackColor, -28) : Ui.Shift(BackColor, -32));
+      } else if (Enabled && _isHover) {
+        fill = (_hover != Color.Empty) ? _hover : (Ui.IsDark(BackColor) ? Ui.Shift(BackColor, 22) : Ui.Shift(BackColor, -16));
+      }
+      using (GraphicsPath path = Ui.Rounded(r, _radius)) {
+        using (SolidBrush b = new SolidBrush(fill)) e.Graphics.FillPath(b, path);
+        TextRenderer.DrawText(e.Graphics, Text, Font,
+          new Rectangle(1, 1, Width - 2, Height - 2),
+          Enabled ? ForeColor : Color.FromArgb(0x9E, 0x9E, 0x9E),
+          TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter |
+          TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding);
+      }
+    }
+  }
+  // 圆角进度条：连续态画橙色渐变填充，Marquee 态自带位移动画
+  public class ModernProgressBar : ProgressBar {
+    private Color _fill = Color.FromArgb(0xF5, 0x7C, 0x00);
+    private Color _track = Color.FromArgb(0xEF, 0xE3, 0xD5);
+    private System.Windows.Forms.Timer _anim;
+    private int _pos = 0;
+    private bool _running = false;
+    public ModernProgressBar() {
+      SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint |
+               ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
+    }
+    public Color BarColor { get { return _fill; } set { _fill = value; Invalidate(); } }
+    public Color TrackColor { get { return _track; } set { _track = value; Invalidate(); } }
+    private void SetupAnim() {
+      if (_anim != null) return;
+      _anim = new System.Windows.Forms.Timer();
+      _anim.Interval = 24;
+      _anim.Tick += delegate { _pos = (_pos + 6) % Math.Max(80, Width + 80); Invalidate(); };
+    }
+    private void SetRunning(bool r) {
+      if (r && !_running) { SetupAnim(); _anim.Start(); _running = true; }
+      else if (!r && _running) { if (_anim != null) _anim.Stop(); _running = false; }
+    }
+    protected override void OnStyleChanged(EventArgs e) {
+      base.OnStyleChanged(e);
+      SetRunning(Style == ProgressBarStyle.Marquee);
+    }
+    protected override void OnVisibleChanged(EventArgs e) {
+      base.OnVisibleChanged(e);
+      if (Style == ProgressBarStyle.Marquee) SetRunning(Visible);
+    }
+    protected override void OnHandleDestroyed(EventArgs e) {
+      SetRunning(false);
+      base.OnHandleDestroyed(e);
+    }
+    protected override void OnPaintBackground(PaintEventArgs pevent) { }
+    protected override void OnPaint(PaintEventArgs e) {
+      e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+      Rectangle r = new Rectangle(0, 0, Width - 1, Height - 1);
+      int rad = Math.Max(3, Math.Min(8, Height / 2));
+      using (GraphicsPath path = Ui.Rounded(r, rad)) {
+        using (SolidBrush bg = new SolidBrush(_track)) e.Graphics.FillPath(bg, path);
+      }
+      if (Style == ProgressBarStyle.Marquee) {
+        int seg = Math.Max(70, Width / 3);
+        int x = _pos - seg;
+        if (x < 0) x = 0;
+        int w = Math.Min(seg, Width - x);
+        if (w > 2) {
+          Rectangle fr = new Rectangle(x, 1, w, Height - 2);
+          using (GraphicsPath fp = Ui.Rounded(fr, rad)) {
+            using (LinearGradientBrush fb = new LinearGradientBrush(fr, _fill, Ui.Shift(_fill, 26), 90f))
+              e.Graphics.FillPath(fb, fp);
+          }
+        }
+      } else {
+        double pct = (Maximum > 0) ? (double)Value / Maximum : 0;
+        int w = (int)((Width - 2) * pct);
+        if (w > 0) {
+          Rectangle fr = new Rectangle(1, 1, w, Height - 2);
+          using (GraphicsPath fp = Ui.Rounded(fr, rad)) {
+            using (LinearGradientBrush fb = new LinearGradientBrush(fr, _fill, Ui.Shift(_fill, 26), 90f))
+              e.Graphics.FillPath(fb, fp);
+          }
+        }
+      }
+    }
+  }
+  // 卡片面板：白底圆角 + 细描边（用于右侧详情栏等独立卡片）
+  public class CardPanel : Panel {
+    private int _radius = 8;
+    private Color _border = Color.FromArgb(0xE8, 0xE0, 0xD8);
+    public CardPanel() {
+      SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint |
+               ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw |
+               ControlStyles.SupportsTransparentBackColor, true);
+      BackColor = Color.White;
+    }
+    public int Radius { get { return _radius; } set { _radius = value; Invalidate(); } }
+    public Color BorderColor { get { return _border; } set { _border = value; Invalidate(); } }
+    protected override void OnPaintBackground(PaintEventArgs e) { }
+    protected override void OnPaint(PaintEventArgs e) {
+      e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+      Rectangle r = new Rectangle(0, 0, Width - 1, Height - 1);
+      using (GraphicsPath path = Ui.Rounded(r, _radius)) {
+        using (SolidBrush b = new SolidBrush(BackColor)) e.Graphics.FillPath(b, path);
+        using (Pen p = new Pen(_border)) e.Graphics.DrawPath(p, path);
+      }
+    }
+  }
+}
+'@
+}
+# 统一创建现代按钮：$Back 十六进制，默认浅橙副按钮样式（深色主按钮/红色危险按钮由调用处显式覆盖）
+function New-ModernButton {
+  param([string]$Text, [string]$Back = $script:Theme.LightBtn, [string]$Fore = '#6D4C41', [int]$FontSize = 9, [switch]$Bold)
+  $b = New-Object DiskCleaner.ModernButton
+  $b.Text = $Text
+  $b.BackColor = [System.Drawing.ColorTranslator]::FromHtml($Back)
+  $b.ForeColor = [System.Drawing.ColorTranslator]::FromHtml($Fore)
+  $style = if ($Bold) { [System.Drawing.FontStyle]::Bold } else { [System.Drawing.FontStyle]::Regular }
+  $b.Font = New-Object System.Drawing.Font($script:Theme.FontUi, $FontSize, $style)
+  return $b
+}
+# 统一创建现代进度条：$Fill 填充色，$Track 轨道色
+function New-ModernProgressBar {
+  param([string]$Fill = $script:Theme.Primary, [string]$Track = '#EFE3D5')
+  $b = New-Object DiskCleaner.ModernProgressBar
+  $b.BarColor = [System.Drawing.ColorTranslator]::FromHtml($Fill)
+  $b.TrackColor = [System.Drawing.ColorTranslator]::FromHtml($Track)
+  return $b
+}
 #endregion
 
 #region 全局异常兜底（程序绝不闪退）
@@ -506,6 +701,17 @@ function Get-RiskText {
   }
 }
 
+function Get-RiskBackColor {
+  # 柔和风险底色（浅 tint），配 Get-RiskColor 的深色前景，替代刺眼的整行纯色
+  param([string]$Risk)
+  switch ($Risk) {
+    'green'  { return '#E8F5E9' }
+    'yellow' { return '#FFF8E1' }
+    'red'    { return '#FFEBEE' }
+    default  { return '#FFFFFF' }
+  }
+}
+
 function New-PlaceholderPage {
   # 附加功能 Tab 占位页（提交6 填充）
   param([string]$Text, [string]$Msg)
@@ -514,7 +720,7 @@ function New-PlaceholderPage {
   $p.BackColor = [System.Drawing.ColorTranslator]::FromHtml($script:Theme.Bg)
   $l = New-Object System.Windows.Forms.Label
   $l.Text = $Msg
-  $l.Font = New-Object System.Drawing.Font('Microsoft YaHei', 12)
+  $l.Font = New-Object System.Drawing.Font($script:Theme.FontUi,12)
   $l.ForeColor = [System.Drawing.ColorTranslator]::FromHtml($script:Theme.Text)
   $l.AutoSize = $true
   $l.Location = New-Object System.Drawing.Point(24, 30)
@@ -653,17 +859,17 @@ function New-LargeFilesPage {
   $script:CmbTh.SelectedIndex = 0
   $top.Controls.Add($script:CmbTh)
 
-  $script:BtnScanL = New-Object System.Windows.Forms.Button
+  $script:BtnScanL = New-ModernButton
   $script:BtnScanL.Text = '开始扫描'
   $script:BtnScanL.BackColor = [System.Drawing.ColorTranslator]::FromHtml($script:Theme.Primary)
   $script:BtnScanL.ForeColor = [System.Drawing.Color]::White; $script:BtnScanL.FlatStyle = 'Flat'
   $script:BtnScanL.Location = New-Object System.Drawing.Point(300, 8); $script:BtnScanL.Size = New-Object System.Drawing.Size(90, 28)
   $top.Controls.Add($script:BtnScanL)
-  $script:BtnStopL = New-Object System.Windows.Forms.Button
+  $script:BtnStopL = New-ModernButton
   $script:BtnStopL.Text = '停止'
   $script:BtnStopL.Location = New-Object System.Drawing.Point(396, 8); $script:BtnStopL.Size = New-Object System.Drawing.Size(60, 28); $script:BtnStopL.Enabled = $false
   $top.Controls.Add($script:BtnStopL)
-  $script:ProgL = New-Object System.Windows.Forms.ProgressBar
+  $script:ProgL = New-ModernProgressBar
   $script:ProgL.Location = New-Object System.Drawing.Point(466, 13); $script:ProgL.Size = New-Object System.Drawing.Size(220, 16)
   $top.Controls.Add($script:ProgL)
   $script:LblL = New-Object System.Windows.Forms.Label
@@ -672,7 +878,7 @@ function New-LargeFilesPage {
 
   $script:LvLarge = New-Object System.Windows.Forms.ListView
   $script:LvLarge.Dock = 'Fill'
-  $script:LvLarge.View = 'Details'; $script:LvLarge.FullRowSelect = $true; $script:LvLarge.GridLines = $true; $script:LvLarge.HideSelection = $false
+  $script:LvLarge.View = 'Details'; $script:LvLarge.FullRowSelect = $true; $script:LvLarge.GridLines = $false; $script:LvLarge.HideSelection = $false
   $script:LvLarge.UseCompatibleStateImageBehavior = $false
   $null = $script:LvLarge.Columns.Add('名称', 220)
   $null = $script:LvLarge.Columns.Add('大小', 90)
@@ -685,11 +891,11 @@ function New-LargeFilesPage {
   $foot.Width = 1200
   $script:LblLTotal = New-Object System.Windows.Forms.Label
   $script:LblLTotal.Text = '共 0 个文件'
-  $script:LblLTotal.Font = New-Object System.Drawing.Font('Microsoft YaHei', 10, [System.Drawing.FontStyle]::Bold)
+  $script:LblLTotal.Font = New-Object System.Drawing.Font($script:Theme.FontUi,10, [System.Drawing.FontStyle]::Bold)
   $script:LblLTotal.ForeColor = [System.Drawing.ColorTranslator]::FromHtml($script:Theme.Primary)
   $script:LblLTotal.Location = New-Object System.Drawing.Point(12, 14); $script:LblLTotal.AutoSize = $true
   $foot.Controls.Add($script:LblLTotal)
-  $script:BtnDelL = New-Object System.Windows.Forms.Button
+  $script:BtnDelL = New-ModernButton
   $script:BtnDelL.Text = '删除选中(回收站)'
   $script:BtnDelL.BackColor = [System.Drawing.ColorTranslator]::FromHtml($script:Theme.Red)
   $script:BtnDelL.ForeColor = [System.Drawing.Color]::White; $script:BtnDelL.FlatStyle = 'Flat'
@@ -829,13 +1035,13 @@ function New-SoftwarePage {
   $top = New-Object System.Windows.Forms.Panel
   $top.Dock = 'Top'; $top.Height = 44; $top.BackColor = [System.Drawing.Color]::White
 
-  $btnSoftRefresh = New-Object System.Windows.Forms.Button
+  $btnSoftRefresh = New-ModernButton
   $btnSoftRefresh.Text = '刷新列表'
   $btnSoftRefresh.BackColor = [System.Drawing.ColorTranslator]::FromHtml($script:Theme.Primary)
   $btnSoftRefresh.ForeColor = [System.Drawing.Color]::White; $btnSoftRefresh.FlatStyle = 'Flat'
   $btnSoftRefresh.Location = New-Object System.Drawing.Point(12, 8); $btnSoftRefresh.Size = New-Object System.Drawing.Size(90, 28)
   $top.Controls.Add($btnSoftRefresh)
-  $script:BtnSoftReal = New-Object System.Windows.Forms.Button
+  $script:BtnSoftReal = New-ModernButton
   $script:BtnSoftReal.Text = '计算实际占用'
   $script:BtnSoftReal.Location = New-Object System.Drawing.Point(108, 8); $script:BtnSoftReal.Size = New-Object System.Drawing.Size(120, 28)
   $top.Controls.Add($script:BtnSoftReal)
@@ -847,7 +1053,7 @@ function New-SoftwarePage {
 
   $script:LvSoft = New-Object System.Windows.Forms.ListView
   $script:LvSoft.Dock = 'Fill'
-  $script:LvSoft.View = 'Details'; $script:LvSoft.FullRowSelect = $true; $script:LvSoft.GridLines = $true; $script:LvSoft.HideSelection = $false
+  $script:LvSoft.View = 'Details'; $script:LvSoft.FullRowSelect = $true; $script:LvSoft.GridLines = $false; $script:LvSoft.HideSelection = $false
   $script:LvSoft.UseCompatibleStateImageBehavior = $false
   $null = $script:LvSoft.Columns.Add('名称', 200)
   $null = $script:LvSoft.Columns.Add('发布者', 150)
@@ -1013,21 +1219,21 @@ function New-DupeFilesPage {
   $script:TxtDupDir.Text = $env:USERPROFILE
   $script:TxtDupDir.Location = New-Object System.Drawing.Point(50, 11); $script:TxtDupDir.Width = 330
   $top.Controls.Add($script:TxtDupDir)
-  $btnDupBrowse = New-Object System.Windows.Forms.Button
+  $btnDupBrowse = New-ModernButton
   $btnDupBrowse.Text = '浏览'
   $btnDupBrowse.Location = New-Object System.Drawing.Point(386, 9); $btnDupBrowse.Size = New-Object System.Drawing.Size(60, 26)
   $top.Controls.Add($btnDupBrowse)
-  $script:BtnDupScan = New-Object System.Windows.Forms.Button
+  $script:BtnDupScan = New-ModernButton
   $script:BtnDupScan.Text = '开始检测'
   $script:BtnDupScan.BackColor = [System.Drawing.ColorTranslator]::FromHtml($script:Theme.Primary)
   $script:BtnDupScan.ForeColor = [System.Drawing.Color]::White; $script:BtnDupScan.FlatStyle = 'Flat'
   $script:BtnDupScan.Location = New-Object System.Drawing.Point(452, 8); $script:BtnDupScan.Size = New-Object System.Drawing.Size(90, 28)
   $top.Controls.Add($script:BtnDupScan)
-  $script:BtnDupStop = New-Object System.Windows.Forms.Button
+  $script:BtnDupStop = New-ModernButton
   $script:BtnDupStop.Text = '停止'
   $script:BtnDupStop.Location = New-Object System.Drawing.Point(548, 8); $script:BtnDupStop.Size = New-Object System.Drawing.Size(60, 28); $script:BtnDupStop.Enabled = $false
   $top.Controls.Add($script:BtnDupStop)
-  $script:ProgD = New-Object System.Windows.Forms.ProgressBar
+  $script:ProgD = New-ModernProgressBar
   $script:ProgD.Location = New-Object System.Drawing.Point(618, 13); $script:ProgD.Size = New-Object System.Drawing.Size(200, 16)
   $top.Controls.Add($script:ProgD)
   $script:LblD = New-Object System.Windows.Forms.Label
@@ -1036,7 +1242,7 @@ function New-DupeFilesPage {
 
   $script:LvDup = New-Object System.Windows.Forms.ListView
   $script:LvDup.Dock = 'Fill'
-  $script:LvDup.View = 'Details'; $script:LvDup.FullRowSelect = $true; $script:LvDup.GridLines = $true; $script:LvDup.HideSelection = $false
+  $script:LvDup.View = 'Details'; $script:LvDup.FullRowSelect = $true; $script:LvDup.GridLines = $false; $script:LvDup.HideSelection = $false
   $script:LvDup.CheckBoxes = $true
   $script:LvDup.UseCompatibleStateImageBehavior = $false
   $null = $script:LvDup.Columns.Add('组', 50)
@@ -1053,7 +1259,7 @@ function New-DupeFilesPage {
   $script:LblDupInfo.ForeColor = [System.Drawing.ColorTranslator]::FromHtml($script:Theme.Text)
   $script:LblDupInfo.Location = New-Object System.Drawing.Point(12, 15); $script:LblDupInfo.AutoSize = $true
   $foot.Controls.Add($script:LblDupInfo)
-  $script:BtnDupDel = New-Object System.Windows.Forms.Button
+  $script:BtnDupDel = New-ModernButton
   $script:BtnDupDel.Text = '删除勾选(回收站)'
   $script:BtnDupDel.BackColor = [System.Drawing.ColorTranslator]::FromHtml($script:Theme.Red)
   $script:BtnDupDel.ForeColor = [System.Drawing.Color]::White; $script:BtnDupDel.FlatStyle = 'Flat'
@@ -1093,6 +1299,7 @@ function New-DupeFilesPage {
       $li.Tag = $r
       $li.Checked = -not $r.Keep
       $li.ForeColor = if ($r.Keep) { [System.Drawing.ColorTranslator]::FromHtml($script:Theme.Green) } else { [System.Drawing.ColorTranslator]::FromHtml($script:Theme.Text) }
+      $li.BackColor = if ($r.Keep) { [System.Drawing.ColorTranslator]::FromHtml('#E8F5E9') } else { [System.Drawing.ColorTranslator]::FromHtml('#FFF8E1') }
       $null = $script:LvDup.Items.Add($li)
     }
     $script:LvDup.EndUpdate()
@@ -1173,20 +1380,20 @@ function New-RestorePage {
   $script:RPBanner.Dock = 'Top'; $script:RPBanner.Height = 40; $script:RPBanner.BackColor = [System.Drawing.ColorTranslator]::FromHtml($script:Theme.Yellow)
   $script:LblRPStatus = New-Object System.Windows.Forms.Label
   $script:LblRPStatus.Text = '检测中...'
-  $script:LblRPStatus.Font = New-Object System.Drawing.Font('Microsoft YaHei', 10, [System.Drawing.FontStyle]::Bold)
+  $script:LblRPStatus.Font = New-Object System.Drawing.Font($script:Theme.FontUi,10, [System.Drawing.FontStyle]::Bold)
   $script:LblRPStatus.ForeColor = [System.Drawing.ColorTranslator]::FromHtml($script:Theme.Text)
   $script:LblRPStatus.Location = New-Object System.Drawing.Point(12, 10); $script:LblRPStatus.AutoSize = $true
   $script:RPBanner.Controls.Add($script:LblRPStatus)
 
   $top = New-Object System.Windows.Forms.Panel
   $top.Dock = 'Top'; $top.Height = 44; $top.BackColor = [System.Drawing.Color]::White
-  $btnRPRefresh = New-Object System.Windows.Forms.Button
+  $btnRPRefresh = New-ModernButton
   $btnRPRefresh.Text = '刷新'
   $btnRPRefresh.BackColor = [System.Drawing.ColorTranslator]::FromHtml($script:Theme.Primary)
   $btnRPRefresh.ForeColor = [System.Drawing.Color]::White; $btnRPRefresh.FlatStyle = 'Flat'
   $btnRPRefresh.Location = New-Object System.Drawing.Point(12, 8); $btnRPRefresh.Size = New-Object System.Drawing.Size(70, 28)
   $top.Controls.Add($btnRPRefresh)
-  $script:BtnRPDelete = New-Object System.Windows.Forms.Button
+  $script:BtnRPDelete = New-ModernButton
   $script:BtnRPDelete.Text = '删除旧还原点(保留最近3个)'
   $script:BtnRPDelete.BackColor = [System.Drawing.ColorTranslator]::FromHtml($script:Theme.Red)
   $script:BtnRPDelete.ForeColor = [System.Drawing.Color]::White; $script:BtnRPDelete.FlatStyle = 'Flat'
@@ -1195,7 +1402,7 @@ function New-RestorePage {
 
   $script:LvRP = New-Object System.Windows.Forms.ListView
   $script:LvRP.Dock = 'Fill'
-  $script:LvRP.View = 'Details'; $script:LvRP.FullRowSelect = $true; $script:LvRP.GridLines = $true; $script:LvRP.HideSelection = $false
+  $script:LvRP.View = 'Details'; $script:LvRP.FullRowSelect = $true; $script:LvRP.GridLines = $false; $script:LvRP.HideSelection = $false
   $script:LvRP.UseCompatibleStateImageBehavior = $false
   $null = $script:LvRP.Columns.Add('序号', 70)
   $null = $script:LvRP.Columns.Add('创建时间', 150)
@@ -1299,17 +1506,17 @@ function New-StartupPage {
   $top = New-Object System.Windows.Forms.Panel
   $top.Dock = 'Top'; $top.Height = 44; $top.BackColor = [System.Drawing.Color]::White
 
-  $btnStRefresh = New-Object System.Windows.Forms.Button
+  $btnStRefresh = New-ModernButton
   $btnStRefresh.Text = '刷新'
   $btnStRefresh.BackColor = [System.Drawing.ColorTranslator]::FromHtml($script:Theme.Primary)
   $btnStRefresh.ForeColor = [System.Drawing.Color]::White; $btnStRefresh.FlatStyle = 'Flat'
   $btnStRefresh.Location = New-Object System.Drawing.Point(12, 8); $btnStRefresh.Size = New-Object System.Drawing.Size(70, 28)
   $top.Controls.Add($btnStRefresh)
-  $btnStOpen = New-Object System.Windows.Forms.Button
+  $btnStOpen = New-ModernButton
   $btnStOpen.Text = '打开启动文件夹'
   $btnStOpen.Location = New-Object System.Drawing.Point(88, 8); $btnStOpen.Size = New-Object System.Drawing.Size(120, 28)
   $top.Controls.Add($btnStOpen)
-  $btnStBackup = New-Object System.Windows.Forms.Button
+  $btnStBackup = New-ModernButton
   $btnStBackup.Text = '备份注册表项(.reg)'
   $btnStBackup.Location = New-Object System.Drawing.Point(214, 8); $btnStBackup.Size = New-Object System.Drawing.Size(140, 28)
   $top.Controls.Add($btnStBackup)
@@ -1321,7 +1528,7 @@ function New-StartupPage {
 
   $script:LvStart = New-Object System.Windows.Forms.ListView
   $script:LvStart.Dock = 'Fill'
-  $script:LvStart.View = 'Details'; $script:LvStart.FullRowSelect = $true; $script:LvStart.GridLines = $true; $script:LvStart.HideSelection = $false
+  $script:LvStart.View = 'Details'; $script:LvStart.FullRowSelect = $true; $script:LvStart.GridLines = $false; $script:LvStart.HideSelection = $false
   $script:LvStart.UseCompatibleStateImageBehavior = $false
   $null = $script:LvStart.Columns.Add('来源', 130)
   $null = $script:LvStart.Columns.Add('名称', 200)
@@ -1377,8 +1584,24 @@ function New-MainWindow {
   $f.MinimumSize = New-Object System.Drawing.Size(960, 640)
   $f.BackColor = [System.Drawing.ColorTranslator]::FromHtml($script:Theme.Bg)
   $f.StartPosition = 'CenterScreen'
-  $f.Font = New-Object System.Drawing.Font('Microsoft YaHei', 9)
-  $f.Icon = $null   # 纯代码绘制，无图片资源
+  $f.Font = New-Object System.Drawing.Font($script:Theme.FontUi, 9)
+  # 程序图标：代码绘制橙色圆角方块 + 白色对勾（无图片资源文件）
+  $iconBmp = New-Object System.Drawing.Bitmap(32, 32)
+  $ig = [System.Drawing.Graphics]::FromImage($iconBmp)
+  $ig.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
+  $ig.Clear([System.Drawing.Color]::Transparent)
+  $ip = New-Object System.Drawing.Drawing2D.GraphicsPath
+  $ip.AddArc(2, 2, 12, 12, 180, 90); $ip.AddArc(18, 2, 12, 12, 270, 90)
+  $ip.AddArc(18, 18, 12, 12, 0, 90); $ip.AddArc(2, 18, 12, 12, 90, 90)
+  $ip.CloseFigure()
+  $ib = New-Object System.Drawing.SolidBrush([System.Drawing.ColorTranslator]::FromHtml($script:Theme.Primary))
+  $ig.FillPath($ib, $ip)
+  $ipen = New-Object System.Drawing.Pen([System.Drawing.Color]::White, 3)
+  $ipen.StartCap = [System.Drawing.Drawing2D.LineCap]::Round
+  $ipen.EndCap = [System.Drawing.Drawing2D.LineCap]::Round
+  $ig.DrawLine($ipen, 9, 17, 14, 22); $ig.DrawLine($ipen, 14, 22, 24, 9)
+  $f.Icon = [System.Drawing.Icon]::FromHandle($iconBmp.GetHicon())
+  $ipen.Dispose(); $ib.Dispose(); $ip.Dispose(); $ig.Dispose(); $iconBmp.Dispose()
 
   # ============ 顶部横幅 ============
   $banner = New-Object System.Windows.Forms.Panel
@@ -1387,10 +1610,21 @@ function New-MainWindow {
   # 先按设计宽度设置：右锚定子控件首次布局时才能按真实右缘计算（否则按默认 200 宽算出负留白→被推到屏外）
   $banner.Width = $f.ClientSize.Width
   $banner.BackColor = [System.Drawing.ColorTranslator]::FromHtml($script:Theme.Banner)
+  # 横幅渐变：深橙 → 亮橙（LinearGradientBrush 自上而下）
+  $banner.add_Paint({
+    param($s, $e)
+    $g = $e.Graphics
+    $rect = $s.ClientRectangle
+    $c1 = [System.Drawing.ColorTranslator]::FromHtml($script:Theme.Banner)
+    $c2 = [System.Drawing.ColorTranslator]::FromHtml($script:Theme.Secondary)
+    $brush = New-Object System.Drawing.Drawing2D.LinearGradientBrush($rect, $c1, $c2, 90.0)
+    $g.FillRectangle($brush, $rect)
+    $brush.Dispose()
+  })
 
   $title = New-Object System.Windows.Forms.Label
   $title.Text = 'DiskCleanerPro  C 盘智能清理工具'
-  $title.Font = New-Object System.Drawing.Font('Microsoft YaHei', 20, [System.Drawing.FontStyle]::Bold)
+  $title.Font = New-Object System.Drawing.Font($script:Theme.FontUi,20, [System.Drawing.FontStyle]::Bold)
   $title.ForeColor = [System.Drawing.Color]::White
   $title.Location = New-Object System.Drawing.Point(20, 10)
   $title.AutoSize = $true
@@ -1399,7 +1633,7 @@ function New-MainWindow {
   $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
   $adminBadge = New-Object System.Windows.Forms.Label
   $adminBadge.Text = if ($isAdmin) { '管理员模式: 已启用' } else { '普通模式（建议以管理员运行）' }
-  $adminBadge.Font = New-Object System.Drawing.Font('Microsoft YaHei', 9, [System.Drawing.FontStyle]::Bold)
+  $adminBadge.Font = New-Object System.Drawing.Font($script:Theme.FontUi,9, [System.Drawing.FontStyle]::Bold)
   $adminBadge.ForeColor = [System.Drawing.Color]::White
   $adminBadge.Location = New-Object System.Drawing.Point(20, 54)
   $adminBadge.AutoSize = $true
@@ -1407,14 +1641,14 @@ function New-MainWindow {
 
   $script:DiskInfo = New-Object System.Windows.Forms.Label
   $script:DiskInfo.Text = '磁盘信息加载中...'
-  $script:DiskInfo.Font = New-Object System.Drawing.Font('Microsoft YaHei', 9)
+  $script:DiskInfo.Font = New-Object System.Drawing.Font($script:Theme.FontUi,9)
   $script:DiskInfo.ForeColor = [System.Drawing.Color]::White
   $script:DiskInfo.AutoSize = $true
   $script:DiskInfo.Location = New-Object System.Drawing.Point(940, 54)
   $script:DiskInfo.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Right
   $banner.Controls.Add($script:DiskInfo)
 
-  $script:DiskBar = New-Object System.Windows.Forms.ProgressBar
+  $script:DiskBar = New-ModernProgressBar -Fill '#FFFFFF' -Track '#D84315'
   # 进度条左|右锚定：左右留白各 12px（第3行，避开第1行标题/第2行徽标与磁盘信息），缩小时拉伸
   $script:DiskBar.Location = New-Object System.Drawing.Point(12, 73)
   $script:DiskBar.Size = New-Object System.Drawing.Size(1100, 18)
@@ -1422,7 +1656,7 @@ function New-MainWindow {
   $script:DiskBar.Style = 'Continuous'
   $banner.Controls.Add($script:DiskBar)
 
-  $script:BtnScan = New-Object System.Windows.Forms.Button
+  $script:BtnScan = New-ModernButton
   $script:BtnScan.Text = '立即重新扫描'
   $script:BtnScan.BackColor = [System.Drawing.ColorTranslator]::FromHtml($script:Theme.Secondary)
   $script:BtnScan.ForeColor = [System.Drawing.Color]::White
@@ -1432,7 +1666,7 @@ function New-MainWindow {
   $script:BtnScan.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Right
   $banner.Controls.Add($script:BtnScan)
 
-  $btnClearCache = New-Object System.Windows.Forms.Button
+  $btnClearCache = New-ModernButton
   $btnClearCache.Text = '清空扫描缓存'
   $btnClearCache.BackColor = [System.Drawing.ColorTranslator]::FromHtml($script:Theme.Secondary)
   $btnClearCache.ForeColor = [System.Drawing.Color]::White
@@ -1442,7 +1676,7 @@ function New-MainWindow {
   $btnClearCache.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Right
   $banner.Controls.Add($btnClearCache)
 
-  $script:BtnCancelScan = New-Object System.Windows.Forms.Button
+  $script:BtnCancelScan = New-ModernButton
   $script:BtnCancelScan.Text = '取消扫描'
   $script:BtnCancelScan.BackColor = [System.Drawing.Color]::Gray
   $script:BtnCancelScan.ForeColor = [System.Drawing.Color]::White
@@ -1478,6 +1712,37 @@ function New-MainWindow {
   $tabs.Dock = 'Fill'
   # 先按设计宽度设置：其下所有 TabPage 在加入前都能按真实宽度布局，锚定子控件不会按默认 200 宽算错
   $tabs.Width = $f.ClientSize.Width
+  # 自绘页签头：选中页白底 + 顶部橙色下划线高亮，未选中浅橙灰字（Win11 风格）
+  $tabs.DrawMode = 'OwnerDrawFixed'
+  $tabs.SizeMode = 'Fixed'
+  $tabs.ItemSize = New-Object System.Drawing.Size(112, 32)
+  $tabs.add_DrawItem({
+    param($s, $e)
+    $tc = [System.Windows.Forms.TabControl]$s
+    $idx = $e.Index
+    $rect = $tc.GetTabRect($idx)
+    $sel = ($idx -eq $tc.SelectedIndex)
+    $g = $e.Graphics
+    $g.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
+    $back = if ($sel) { [System.Drawing.Color]::White } else { [System.Drawing.ColorTranslator]::FromHtml('#FBE7CC') }
+    $brush = New-Object System.Drawing.SolidBrush($back)
+    $g.FillRectangle($brush, $rect)
+    $brush.Dispose()
+    if ($sel) {
+      $barBrush = New-Object System.Drawing.SolidBrush([System.Drawing.ColorTranslator]::FromHtml($script:Theme.Primary))
+      $g.FillRectangle($barBrush, $rect.X, $rect.Y + 2, $rect.Width, 3)
+      $barBrush.Dispose()
+    }
+    $txtColor = if ($sel) { [System.Drawing.ColorTranslator]::FromHtml($script:Theme.Primary) } else { [System.Drawing.ColorTranslator]::FromHtml('#9E9E9E') }
+    $font = if ($sel) { New-Object System.Drawing.Font($script:Theme.FontUi, 10, [System.Drawing.FontStyle]::Bold) } else { New-Object System.Drawing.Font($script:Theme.FontUi, 10) }
+    $fmt = New-Object System.Drawing.StringFormat
+    $fmt.Alignment = [System.Drawing.StringAlignment]::Center
+    $fmt.LineAlignment = [System.Drawing.StringAlignment]::Center
+    $textBrush = New-Object System.Drawing.SolidBrush($txtColor)
+    $rectF = New-Object System.Drawing.RectangleF($rect.X, $rect.Y, $rect.Width, $rect.Height)
+    $g.DrawString($tc.TabPages[$idx].Text, $font, $textBrush, $rectF, $fmt)
+    $textBrush.Dispose(); $fmt.Dispose(); $font.Dispose()
+  })
 
   # ===== Tab1 缓存清理 =====
   $tabClean = New-Object System.Windows.Forms.TabPage
@@ -1495,31 +1760,31 @@ function New-MainWindow {
 
   $script:TotalLabel = New-Object System.Windows.Forms.Label
   $script:TotalLabel.Text = '合计可释放: 0 B'
-  $script:TotalLabel.Font = New-Object System.Drawing.Font('Microsoft YaHei', 13, [System.Drawing.FontStyle]::Bold)
+  $script:TotalLabel.Font = New-Object System.Drawing.Font($script:Theme.FontUi,13, [System.Drawing.FontStyle]::Bold)
   $script:TotalLabel.ForeColor = [System.Drawing.ColorTranslator]::FromHtml($script:Theme.Primary)
   $script:TotalLabel.Location = New-Object System.Drawing.Point(14, 12)
   $script:TotalLabel.AutoSize = $true
   $actionBar.Controls.Add($script:TotalLabel)
 
-  $btnAll = New-Object System.Windows.Forms.Button
+  $btnAll = New-ModernButton
   $btnAll.Text = '全选'
   $btnAll.Location = New-Object System.Drawing.Point(12, 52)
   $btnAll.Size = New-Object System.Drawing.Size(72, 30)
   $actionBar.Controls.Add($btnAll)
 
-  $btnNone = New-Object System.Windows.Forms.Button
+  $btnNone = New-ModernButton
   $btnNone.Text = '全不选'
   $btnNone.Location = New-Object System.Drawing.Point(90, 52)
   $btnNone.Size = New-Object System.Drawing.Size(72, 30)
   $actionBar.Controls.Add($btnNone)
 
-  $btnLow = New-Object System.Windows.Forms.Button
+  $btnLow = New-ModernButton
   $btnLow.Text = '仅低风险'
   $btnLow.Location = New-Object System.Drawing.Point(168, 52)
   $btnLow.Size = New-Object System.Drawing.Size(88, 30)
   $actionBar.Controls.Add($btnLow)
 
-  $btnSafe = New-Object System.Windows.Forms.Button
+  $btnSafe = New-ModernButton
   $btnSafe.Text = '一键清理安全项'
   $btnSafe.BackColor = [System.Drawing.ColorTranslator]::FromHtml($script:Theme.Green)
   $btnSafe.ForeColor = [System.Drawing.Color]::White
@@ -1542,18 +1807,18 @@ function New-MainWindow {
   $script:RbPermanent.AutoSize = $true
   $actionBar.Controls.Add($script:RbPermanent)
 
-  $script:BtnClean = New-Object System.Windows.Forms.Button
-  $script:BtnClean.Text = '开 始 清 理'
+  $script:BtnClean = New-ModernButton
+  $script:BtnClean.Text = '开始清理'
   $script:BtnClean.BackColor = [System.Drawing.ColorTranslator]::FromHtml($script:Theme.Primary)
   $script:BtnClean.ForeColor = [System.Drawing.Color]::White
-  $script:BtnClean.Font = New-Object System.Drawing.Font('Microsoft YaHei', 12, [System.Drawing.FontStyle]::Bold)
+  $script:BtnClean.Font = New-Object System.Drawing.Font($script:Theme.FontUi,12, [System.Drawing.FontStyle]::Bold)
   $script:BtnClean.FlatStyle = 'Flat'
   $script:BtnClean.Location = New-Object System.Drawing.Point(940, 12)
   $script:BtnClean.Size = New-Object System.Drawing.Size(140, 56)
   $script:BtnClean.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Right
   $actionBar.Controls.Add($script:BtnClean)
 
-  $script:BtnCancelClean = New-Object System.Windows.Forms.Button
+  $script:BtnCancelClean = New-ModernButton
   $script:BtnCancelClean.Text = '取消'
   $script:BtnCancelClean.Location = New-Object System.Drawing.Point(860, 12)
   $script:BtnCancelClean.Size = New-Object System.Drawing.Size(70, 56)
@@ -1561,7 +1826,7 @@ function New-MainWindow {
   $script:BtnCancelClean.Enabled = $false
   $actionBar.Controls.Add($script:BtnCancelClean)
 
-  $script:CleanBar = New-Object System.Windows.Forms.ProgressBar
+  $script:CleanBar = New-ModernProgressBar
   # 进度条左|右锚定：左右留白各 12px（第3行），缩小时拉伸
   $script:CleanBar.Location = New-Object System.Drawing.Point(12, 122)
   $script:CleanBar.Size = New-Object System.Drawing.Size(1100, 16)
@@ -1576,14 +1841,15 @@ function New-MainWindow {
   $actionBar.Controls.Add($script:CleanStatus)
 
   # 右侧详情面板
-  $detailPanel = New-Object System.Windows.Forms.Panel
+  $detailPanel = New-Object DiskCleaner.CardPanel
   $detailPanel.Dock = 'Right'
   $detailPanel.Width = 260
   $detailPanel.BackColor = [System.Drawing.Color]::White
+  $detailPanel.Radius = 6
 
   $script:DetailTitle = New-Object System.Windows.Forms.Label
   $script:DetailTitle.Text = '项目说明'
-  $script:DetailTitle.Font = New-Object System.Drawing.Font('Microsoft YaHei', 11, [System.Drawing.FontStyle]::Bold)
+  $script:DetailTitle.Font = New-Object System.Drawing.Font($script:Theme.FontUi,11, [System.Drawing.FontStyle]::Bold)
   $script:DetailTitle.ForeColor = [System.Drawing.ColorTranslator]::FromHtml($script:Theme.Primary)
   $script:DetailTitle.Location = New-Object System.Drawing.Point(12, 10)
   $script:DetailTitle.AutoSize = $true
@@ -1591,7 +1857,7 @@ function New-MainWindow {
 
   $script:DetailName = New-Object System.Windows.Forms.Label
   $script:DetailName.Text = '（选择左侧清理项）'
-  $script:DetailName.Font = New-Object System.Drawing.Font('Microsoft YaHei', 10, [System.Drawing.FontStyle]::Bold)
+  $script:DetailName.Font = New-Object System.Drawing.Font($script:Theme.FontUi,10, [System.Drawing.FontStyle]::Bold)
   $script:DetailName.ForeColor = [System.Drawing.ColorTranslator]::FromHtml($script:Theme.Text)
   $script:DetailName.Location = New-Object System.Drawing.Point(12, 40)
   $script:DetailName.MaximumSize = New-Object System.Drawing.Size(236, 0)
@@ -1600,7 +1866,7 @@ function New-MainWindow {
 
   $script:DetailRisk = New-Object System.Windows.Forms.Label
   $script:DetailRisk.Text = ''
-  $script:DetailRisk.Font = New-Object System.Drawing.Font('Microsoft YaHei', 10, [System.Drawing.FontStyle]::Bold)
+  $script:DetailRisk.Font = New-Object System.Drawing.Font($script:Theme.FontUi,10, [System.Drawing.FontStyle]::Bold)
   $script:DetailRisk.Location = New-Object System.Drawing.Point(12, 68)
   $script:DetailRisk.AutoSize = $true
   $detailPanel.Controls.Add($script:DetailRisk)
@@ -1628,7 +1894,7 @@ function New-MainWindow {
   $script:MainListView.View = 'Details'
   $script:MainListView.CheckBoxes = $true
   $script:MainListView.FullRowSelect = $true
-  $script:MainListView.GridLines = $true
+  $script:MainListView.GridLines = $false
   $script:MainListView.HideSelection = $false
   $script:MainListView.UseCompatibleStateImageBehavior = $false
   $null = $script:MainListView.Columns.Add('名称', 300)
@@ -1721,6 +1987,7 @@ function New-MainWindow {
       $li = [System.Windows.Forms.ListViewItem]::new([string[]]@($it.name, (Format-Bytes $size), (Get-RiskText $it.risk), $it.desc))
       $li.Tag = [pscustomobject]@{ Item = $it; Size = $size }
       $li.ForeColor = [System.Drawing.ColorTranslator]::FromHtml((Get-RiskColor $it.risk))
+      $li.BackColor = [System.Drawing.ColorTranslator]::FromHtml((Get-RiskBackColor $it.risk))
       $catKey = switch ($it.category) {
         'system'  { '系统' }
         'browser' { '浏览器' }
