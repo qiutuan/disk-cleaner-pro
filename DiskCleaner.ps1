@@ -1781,7 +1781,14 @@ function New-RestorePage {
       $script:BtnRPDelete.Enabled = $false
     } else {
       foreach ($rp in ($pts | Sort-Object CreationTime -Descending)) {
-        $li = [System.Windows.Forms.ListViewItem]::new([string[]]@([string]$rp.SequenceNumber, $rp.CreationTime.ToString('yyyy-MM-dd HH:mm'), [string]$rp.Description))
+        # CreationTime 可能是 WMI 字符串日期（如 20260924...+480），须先转 DateTime
+        try {
+          $dt = [System.Management.ManagementDateTimeConverter]::ToDateTime([string]$rp.CreationTime)
+        } catch {
+          try { $dt = [datetime]$rp.CreationTime } catch { $dt = $null }
+        }
+        $ctStr = if ($dt) { $dt.ToString('yyyy-MM-dd HH:mm') } else { [string]$rp.CreationTime }
+        $li = [System.Windows.Forms.ListViewItem]::new([string[]]@([string]$rp.SequenceNumber, $ctStr, [string]$rp.Description))
         $li.Tag = $rp
         $null = $script:LvRP.Items.Add($li)
       }
