@@ -128,7 +128,7 @@ function script:Register-WorkerBody {
   $body = $body -replace '(?s)^\s*param\(\s*\$s\s*,\s*\$e\s*\)\s*', ''
   $cache = Get-EngineSharedCache
   $init = Get-WorkerInit
-  $composed = "`$s=`$args[0]; `$e=`$args[1]; Set-EngineSharedCache `$args[2]`n" + $body
+  $composed = "`$s=`$args[0]; `$e=`$args[1]; Set-EngineSharedCache `$args[2]`n" + $body + "`nFlush-CleanLog"
   $Worker.add_DoWork([WorkerBridge]::MakeDoWork($Name, $init, $cache, $composed))
 }
 
@@ -2725,6 +2725,10 @@ function New-MainWindow {
     param([string]$Msg)
     try {
       $script:LogBox.AppendText((Get-Date -Format 'HH:mm:ss') + '  ' + $Msg + "`r`n")
+      # 日志框 500 行上限：不依赖 LineCount（未显示/未布局时为 -1），按换行数丢首行
+      if (($script:LogBox.Text -split "`r`n").Count -gt 500) {
+        $script:LogBox.Text = (($script:LogBox.Text -split "`r`n" | Select-Object -Skip 1) -join "`r`n")
+      }
       $script:LogBox.ScrollToEnd()
     } catch { }
     Write-CleanLog $Msg
@@ -2917,12 +2921,14 @@ function Run-SelfTest {
   if (Test-Path $td) { Remove-Item -LiteralPath $td -Recurse -Force -ErrorAction SilentlyContinue }
 
   Write-Host ('== 结果: PASS=' + $script:Pass + '  FAIL=' + $script:Fail + ' ==')
+  Flush-CleanLog   # 自测退出前落盘缓冲日志
   if ($script:Fail -gt 0) { exit 1 } else { exit 0 }
 }
 #endregion
 
 #region 入口
-if ($SelfTest) { Run-SelfTest; return }
+if ($SelfTest) { Run-SelfTest; Flush-CleanLog; return }
 $win = New-MainWindow
 $null = $win.ShowDialog()
+Flush-CleanLog   # 窗口关闭后落盘缓冲日志
 #endregion
