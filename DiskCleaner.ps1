@@ -746,6 +746,7 @@ function New-SpacePage {
   # ===== 状态 =====
   $script:SpaceOwn = $null    # Dictionary[dir] = 直接文件字节
   $script:SpaceTotal = $null  # Dictionary[dir] = 含子孙合计字节
+  $script:SpaceChildren = $null  # 父目录→直接子级索引（worker 构建，下钻快路径）
   $script:SpaceDir = $null    # 当前浏览目录
   $script:SpaceSel = $null    # 选中目录路径
 
@@ -830,11 +831,19 @@ function New-SpacePage {
     # 归一化 base（容忍 Dir 带/不带尾反斜杠）：child = base + 恰好一段无反斜杠后缀
     $base = $Dir.TrimEnd('\') + '\'
     $kids = New-Object System.Collections.Generic.List[object]
-    foreach ($k in $script:SpaceTotal.Keys) {
-      if ($k.Length -gt $base.Length -and $k.StartsWith($base, 'OrdinalIgnoreCase')) {
-        $rest = $k.Substring($base.Length)
-        if ($rest -and ($rest.IndexOf('\') -lt 0)) {
-          $kids.Add([pscustomobject]@{ Path = $k })
+    $idxKids = $null
+    if ($script:SpaceChildren -and $script:SpaceChildren.ContainsKey($Dir)) { $idxKids = $script:SpaceChildren[$Dir] }
+    if ($idxKids) {
+      # 快路径：索引直取直接子级（O(子项数)）
+      foreach ($k in $idxKids) { $kids.Add([pscustomobject]@{ Path = $k }) }
+    } else {
+      # 回退：线性扫描（索引缺席/删除后未重建时，永不崩）
+      foreach ($k in $script:SpaceTotal.Keys) {
+        if ($k.Length -gt $base.Length -and $k.StartsWith($base, 'OrdinalIgnoreCase')) {
+          $rest = $k.Substring($base.Length)
+          if ($rest -and ($rest.IndexOf('\') -lt 0)) {
+            $kids.Add([pscustomobject]@{ Path = $k })
+          }
         }
       }
     }
@@ -876,6 +885,9 @@ function New-SpacePage {
       } catch { }
     }
     Log-Line ('空间分析删除: 成功 {0}/{1}, 释放 {2}' -f $ok, $Paths.Count, (Format-Bytes $rel))
+    if ($ok -gt 0) {
+      try { $script:SpaceChildren = Build-ChildrenIndex $script:SpaceTotal } catch { $script:SpaceChildren = $null }
+    }
     if ($script:SpaceDir) { Space-FillChildren $script:SpaceDir }
     try {
       $null = [System.Windows.MessageBox]::Show(('已删除 {0} 个目录，释放 {1}；占用/受保护自动跳过。' -f $ok, (Format-Bytes $rel)), '完成', [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Information)
@@ -890,7 +902,10 @@ function New-SpacePage {
     param($s, $e)
     $own = Get-DirSizes -Root ([string]$e.Argument) -W $s
     if ($s.CancellationPending) { $e.Cancel = $true; return }
-    $e.Result = @{ Own = $own; Total = (Get-MergedDirTotals $own) }
+    $tot = Get-MergedDirTotals $own
+    # 顺带构建一次"父目录→直接子级"索引，下钻从 O(全盘目录数) 降到 O(子项数)
+    $idx = Build-ChildrenIndex $tot
+    $e.Result = @{ Own = $own; Total = $tot; Children = $idx }
   }
   Register-WorkerBody -Worker $script:SpaceWorker -Name 'Space' -ScriptBlock $spaceDoWork
   $script:SpaceWorker.add_ProgressChanged({
@@ -906,6 +921,7 @@ function New-SpacePage {
       if ($e.Cancelled) { $script:LblSpaceStatus.Text = '已取消'; return }
       $script:SpaceOwn = $e.Result.Own
       $script:SpaceTotal = $e.Result.Total
+      $script:SpaceChildren = $e.Result.Children
       $root = [string]$script:CmbSpaceDrive.SelectedItem + '\'
       if (-not $script:SpaceTotal.ContainsKey($root)) { $root = $root.TrimEnd('\') }
       Space-FillChildren $root
@@ -922,7 +938,7 @@ function New-SpacePage {
     $script:BtnSpaceScan.IsEnabled = $false; $script:BtnSpaceStop.IsEnabled = $true
     $script:ProgSpace.IsIndeterminate = $true
     $script:LblSpaceStatus.Text = '扫描中...'
-    $script:SpaceList.Children.Clear(); $script:SpaceOwn = $null; $script:SpaceTotal = $null; $script:SpaceDir = $null
+    $script:SpaceList.Children.Clear(); $script:SpaceOwn = $null; $script:SpaceTotal = $null; $script:SpaceDir = $null; $script:SpaceChildren = $null
     Log-Line ('空间分析扫描开始: ' + $drive)
     $script:SpaceWorker.RunWorkerAsync(($drive + '\'))
   })
