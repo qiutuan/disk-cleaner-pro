@@ -2944,7 +2944,19 @@ function Run-SelfTest {
 
 #region 入口
 if ($SelfTest) { Run-SelfTest; Flush-CleanLog; return }
+
+# 单实例互斥（A5）：已运行则提示并退出（自测模式不占用）
+$script:AppMutex = New-Object System.Threading.Mutex($false, 'DiskCleanerPro.SingleInstance')
+if (-not $script:AppMutex.WaitOne(0)) {
+  try {
+    $null = [System.Windows.MessageBox]::Show('DiskCleanerPro 已在运行，请勿重复启动。', '提示', [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Information)
+  } catch { }
+  exit 0
+}
+
 $win = New-MainWindow
 $null = $win.ShowDialog()
-Flush-CleanLog   # 窗口关闭后落盘缓冲日志
+Dispose-WorkerRunspaces   # S2：窗口关闭后回收 worker runspace 与后台线程
+Flush-CleanLog            # 落盘缓冲日志
+$script:AppMutex.ReleaseMutex()
 #endregion
