@@ -250,6 +250,49 @@ function Add-WpfSortHeader {
   })
 }
 
+# ---------- 文件夹选择（PS5.1 兼容：SHBrowseForFolder，取代仅 PS7 的 OpenFolderDialog） ----------
+function Select-Folder {
+  # 弹系统文件夹选择对话框；取消返回 $null。PS5.1(.NET Framework) 与 PS7 均可用
+  param([string]$Title = '选择文件夹', [string]$InitialDirectory = '')
+  if (-not ('FolderPicker' -as [type])) {
+    Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+using System.Text;
+public static class FolderPicker {
+  [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
+  static extern IntPtr SHBrowseForFolder(ref BROWSEINFO lpbi);
+  [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
+  static extern bool SHGetPathFromIDList(IntPtr pidl, StringBuilder pszPath);
+  [DllImport("user32.dll")]
+  static extern IntPtr GetForegroundWindow();
+  [DllImport("ole32.dll")]
+  static extern void CoTaskMemFree(IntPtr pv);
+  [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+  struct BROWSEINFO {
+    public IntPtr hwndOwner; public IntPtr pidlRoot; public string pszDisplayName;
+    public string lpszTitle; public uint ulFlags; public IntPtr lpfn; public IntPtr lParam; public int iImage;
+  }
+  public static string Pick(string title, string initial) {
+    BROWSEINFO bi = new BROWSEINFO();
+    bi.hwndOwner = GetForegroundWindow();
+    bi.pszDisplayName = new string('\0', 260);
+    bi.lpszTitle = title ?? "选择文件夹";
+    bi.ulFlags = 0x40 | 0x10 | 0x4000; // BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE | BIF_SHAREABLE
+    IntPtr pidl = SHBrowseForFolder(ref bi);
+    if (pidl == IntPtr.Zero) return null;
+    try {
+      StringBuilder sb = new StringBuilder(260);
+      if (!SHGetPathFromIDList(pidl, sb)) return null;
+      return sb.Length > 0 ? sb.ToString() : null;
+    } finally { CoTaskMemFree(pidl); }
+  }
+}
+'@
+  }
+  return [FolderPicker]::Pick($Title, $InitialDirectory)
+}
+
 function New-CleanPage {
   # ===== 布局：左列表 | 右详情 260px =====
   $g = New-Object System.Windows.Controls.Grid
@@ -1921,10 +1964,8 @@ function New-DupeFilesPage {
 
   $btnDupBrowse.Add_Click({
     try {
-      $d = New-Object Microsoft.Win32.OpenFolderDialog
-      $d.Title = '选择要检测重复文件的目录'
-      if ($script:TxtDupDir.Text) { $d.InitialDirectory = $script:TxtDupDir.Text }
-      if ($d.ShowDialog()) { $script:TxtDupDir.Text = $d.FolderName }
+      $d = Select-Folder -Title '选择要检测重复文件的目录' -InitialDirectory $script:TxtDupDir.Text
+      if ($d) { $script:TxtDupDir.Text = $d }
     } catch { }
   })
   $script:BtnDupScan.Add_Click({
