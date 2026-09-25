@@ -541,8 +541,14 @@ function New-CleanPage {
     $rows = New-Object System.Collections.Generic.List[object]
     foreach ($it in $arg.Items) {
       if ($s.CancellationPending) { $cancelled = $true; break }
-      $planned = Get-ItemSize $it -Force
-      $r = Invoke-SafeDelete $it $mode
+      if ($mode -eq 'Permanent') {
+        # 永久模式：删除即释放，无需预测量（避免删前删后两次全量扫描）
+        $r = Invoke-SafeDelete $it $mode
+        $planned = [long]$r.Released
+      } else {
+        $planned = Get-ItemSize $it -Force
+        $r = Invoke-SafeDelete $it $mode
+      }
       $totalPlanned += [long]$planned
       $totalReleased += [long]$r.Released
       $skippedTotal += [int]$r.Skipped
