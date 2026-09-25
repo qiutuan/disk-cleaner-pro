@@ -359,6 +359,13 @@ function New-CleanPage {
   $script:CleanCheckboxes = @()
 
   # ===== 行构造助手（勾选框 / 风险色 / 悬停 / 详情） =====
+  function script:Save-CleanChecks {
+    # 勾选记忆（A1）：把当前勾选的项目 id 写回 settings.json，下次启动恢复
+    try {
+      $script:Settings.Checked = @($script:CleanCheckboxes | Where-Object { $_.IsChecked -and $_.Tag } | ForEach-Object { [string]$_.Tag.Item.id })
+      Save-Settings
+    } catch { }
+  }
   function script:New-CleanRow {
     param($It, [long]$Size)
     $row = New-Object System.Windows.Controls.Border
@@ -387,8 +394,9 @@ function New-CleanPage {
         if ($r -ne [System.Windows.MessageBoxResult]::Yes) { $s.IsChecked = $false; return }
       }
       Update-Total
+      Save-CleanChecks
     })
-    $cb.Add_Unchecked({ param($s, $e) Update-Total })
+    $cb.Add_Unchecked({ param($s, $e) Update-Total; Save-CleanChecks })
     $null = $ig.Children.Add($cb)
 
     $nm = New-Object System.Windows.Controls.TextBlock
@@ -517,6 +525,14 @@ function New-CleanPage {
       Log-Line ('扫描完成: 共 ' + $script:CleanCheckboxes.Count + ' 项清理目标')
       $warn = [string]$e.Result.ConfigWarning
       if ($warn) { Log-Line ('配置警告: ' + $warn) }
+      # 恢复上次勾选记忆（静默，不重复弹风险确认；随即可再手动取消）
+      $script:SuppressPrompt = $true
+      try {
+        foreach ($cb in $script:CleanCheckboxes) {
+          if ($cb.Tag -and ($script:Settings.Checked -contains [string]$cb.Tag.Item.id)) { $cb.IsChecked = $true }
+        }
+      } finally { $script:SuppressPrompt = $false }
+      Save-CleanChecks
     } catch { Log-Line ('扫描完成处理出错: ' + $_.Exception.Message) }
   })
 
@@ -555,7 +571,7 @@ function New-CleanPage {
       $totalReleased += [long]$r.Released
       $skippedTotal += [int]$r.Skipped
       $rows.Add([pscustomobject]@{
-        Name = [string]$it.name; Category = [string]$it.category; Risk = [string]$it.risk
+        Id = [string]$it.id; Name = [string]$it.name; Category = [string]$it.category; Risk = [string]$it.risk
         Size = [long]$planned; Released = [long]$r.Released; Skipped = [int]$r.Skipped
       })
       $done++
@@ -604,6 +620,14 @@ function New-CleanPage {
       }
       Refresh-DiskInfo
       Update-Total
+      # 已清理项从勾选记忆中移除（下次启动不再自动勾选）
+      try {
+        if ($res.Details -and $res.Details.Count -gt 0) {
+          $cleaned = @($res.Details | ForEach-Object { [string]$_.Id })
+          $script:Settings.Checked = @($script:Settings.Checked | Where-Object { $_ -notin $cleaned })
+          Save-Settings
+        }
+      } catch { }
     } catch { Log-Line ('清理完成处理出错: ' + $_.Exception.Message) }
   })
 
@@ -612,13 +636,14 @@ function New-CleanPage {
 #endregion
 
 #region 设置持久化（删除模式等，写入 runtime\settings.json）
-$script:Settings = @{ DeleteMode = 'Recycle' }
+$script:Settings = @{ DeleteMode = 'Recycle'; Checked = @() }
 function Load-Settings {
   try {
     $p = Join-Path $script:DataDir 'settings.json'
     if (Test-Path $p) {
       $o = Get-Content -Raw -Encoding UTF8 $p | ConvertFrom-Json
       if ($o.DeleteMode -eq 'Permanent') { $script:Settings.DeleteMode = 'Permanent' }
+      if ($null -ne $o.Checked) { $script:Settings.Checked = @($o.Checked) }
     }
   } catch { }
 }
@@ -2782,16 +2807,19 @@ function New-MainWindow {
     $script:SuppressPrompt = $true
     try { foreach ($cb in $script:CleanCheckboxes) { $cb.IsChecked = $false } } finally { $script:SuppressPrompt = $false }
     Update-Total
+    Save-CleanChecks
   })
   $btnLow.Add_Click({
     $script:SuppressPrompt = $true
     try { foreach ($cb in $script:CleanCheckboxes) { $cb.IsChecked = ($cb.Tag -and $cb.Tag.Item.risk -eq 'green') } } finally { $script:SuppressPrompt = $false }
     Update-Total
+    Save-CleanChecks
   })
   $btnSafe.Add_Click({
     $script:SuppressPrompt = $true
     try { foreach ($cb in $script:CleanCheckboxes) { $cb.IsChecked = ($cb.Tag -and $cb.Tag.Item.risk -ne 'red') } } finally { $script:SuppressPrompt = $false }
     Update-Total
+    Save-CleanChecks
   })
 
   $script:RestoringMode = $false
