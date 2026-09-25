@@ -2877,6 +2877,24 @@ function New-MainWindow {
     Start-Scan
   })
 
+  # ---- 快捷键（U4）：F5 重新扫描清理页；Ctrl+Enter 开始清理（仅清理页激活时） ----
+  $win.Add_PreviewKeyDown({
+    param($s, $e)
+    try {
+      if ($script:NavList.SelectedIndex -ne 0) { return }
+      if ($e.Key -eq [System.Windows.Input.Key]::F5) {
+        if ($script:BtnScan.IsEnabled) { Start-Scan }
+        $e.Handled = $true
+      } elseif ($e.Key -eq [System.Windows.Input.Key]::Enter -and
+                (([System.Windows.Input.Keyboard]::Modifiers) -band [System.Windows.Input.ModifierKeys]::Control)) {
+        if ($script:BtnClean.IsEnabled) {
+          $script:BtnClean.RaiseEvent((New-Object System.Windows.RoutedEventArgs([System.Windows.Controls.Button]::ClickEvent)))
+        }
+        $e.Handled = $true
+      }
+    } catch { }
+  })
+
   return $win
 }
 #endregion
