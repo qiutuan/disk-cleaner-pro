@@ -468,7 +468,7 @@ function New-CleanPage {
       $n++
       $s.ReportProgress([int](100.0 * $n / $items.Count), $it.name)
     }
-    $e.Result = @{ Rows = $rows }
+    $e.Result = @{ Rows = $rows; ConfigWarning = (Get-ConfigWarning) }
   }
   Register-WorkerBody -Worker $script:ScanWorker -Name 'Scan' -ScriptBlock $scanDoWork
   $script:ScanWorker.add_ProgressChanged({
@@ -515,6 +515,8 @@ function New-CleanPage {
       Update-Total
       Refresh-DiskInfo
       Log-Line ('扫描完成: 共 ' + $script:CleanCheckboxes.Count + ' 项清理目标')
+      $warn = [string]$e.Result.ConfigWarning
+      if ($warn) { Log-Line ('配置警告: ' + $warn) }
     } catch { Log-Line ('扫描完成处理出错: ' + $_.Exception.Message) }
   })
 
