@@ -301,14 +301,49 @@ function New-CleanPage {
   $colD.Width = [System.Windows.GridLength]::new(260)
   $null = $g.ColumnDefinitions.Add($colD)
 
-  # 左：分组列表（ScrollViewer > StackPanel）
+  # 左：搜索栏 + 分组列表（ScrollViewer > StackPanel）
+  $leftWrap = New-Object System.Windows.Controls.Grid
+  $rTop = New-Object System.Windows.Controls.RowDefinition; $rTop.Height = [System.Windows.GridLength]::new(40)
+  $rList = New-Object System.Windows.Controls.RowDefinition; $rList.Height = [System.Windows.GridLength]::new(1, [System.Windows.GridUnitType]::Star)
+  $null = $leftWrap.RowDefinitions.Add($rTop); $null = $leftWrap.RowDefinitions.Add($rList)
+
+  $script:TxtFilter = New-Object System.Windows.Controls.TextBox
+  $script:TxtFilter.Margin = (New-WpfThickness 8 6 8 4)
+  $script:TxtFilter.VerticalContentAlignment = 'Center'
+  $script:TxtFilter.ToolTip = '按名称/分类实时过滤清理项'
+  $null = $leftWrap.Children.Add($script:TxtFilter)
+
   $scroll = New-Object System.Windows.Controls.ScrollViewer
   $scroll.VerticalScrollBarVisibility = 'Auto'
   $scroll.HorizontalScrollBarVisibility = 'Disabled'
   $scroll.Background = (New-WpfBrush '#FFFFFF')
+  [System.Windows.Controls.Grid]::SetRow($scroll, 1)
   $script:CleanList = New-Object System.Windows.Controls.StackPanel
   $scroll.Content = $script:CleanList
-  $null = $g.Children.Add($scroll)
+  $null = $leftWrap.Children.Add($scroll)
+  $null = $g.Children.Add($leftWrap)
+
+  # 实时过滤（U2）：按名称/分类隐藏不匹配行（不清数据，只切 Visibility）
+  $script:TxtFilter.Add_TextChanged({
+    param($s, $e)
+    try {
+      $kw = $script:TxtFilter.Text.Trim()
+      foreach ($cb in $script:CleanCheckboxes) {
+        $show = $true
+        if ($kw -and $cb.Tag) {
+          $name = [string]$cb.Tag.Item.name
+          $cat = [string]$cb.Tag.Item.category
+          $show = ($name.IndexOf($kw, [System.StringComparison]::OrdinalIgnoreCase) -ge 0) -or
+                  ($cat.IndexOf($kw, [System.StringComparison]::OrdinalIgnoreCase) -ge 0)
+        }
+        $row = $null
+        try { $row = $cb.Parent.Parent } catch { }
+        if ($row -and $row -is [System.Windows.Controls.Border]) {
+          $row.Visibility = $(if ($show) { 'Visible' } else { 'Collapsed' })
+        }
+      }
+    } catch { }
+  })
 
   # 右：详情面板
   $detail = New-Object System.Windows.Controls.Border
