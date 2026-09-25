@@ -2844,8 +2844,20 @@ function New-MainWindow {
     }
     $mode = if ($script:RbPermanent.IsChecked) { 'Permanent' } else { 'Recycle' }
     if ($mode -eq 'Permanent') {
-      $r = [System.Windows.MessageBox]::Show('你选择了【永久删除】！文件将无法从回收站恢复。确认继续？', '危险操作', [System.Windows.MessageBoxButton]::YesNo, [System.Windows.MessageBoxImage]::Warning)
-      if ($r -ne [System.Windows.MessageBoxResult]::Yes) { return }
+      # 永久删除强化确认（A7）：仅提示框不够，须输入「确认删除」才能继续
+      try {
+        $null = [System.Windows.MessageBox]::Show('你选择了【永久删除】！文件将无法从回收站恢复，此操作不可撤销。' + "`r`n`r`n" + '下一步将要求输入「确认删除」以完成最终确认。', '危险操作', [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Warning)
+        if (-not ('Microsoft.VisualBasic.Interaction' -as [type])) { Add-Type -AssemblyName Microsoft.VisualBasic }
+        $ans = [Microsoft.VisualBasic.Interaction]::InputBox('永久删除不可恢复！请输入「确认删除」四个字以继续：', '危险操作确认', '')
+        if ([string]$ans -ne '确认删除') {
+          try { $null = [System.Windows.MessageBox]::Show('输入不一致，已取消本次清理。', '已取消', [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Information) } catch { }
+          return
+        }
+      } catch {
+        # InputBox 不可用（极端环境）时回退为原确认框
+        $r = [System.Windows.MessageBox]::Show('你选择了【永久删除】！文件将无法从回收站恢复。确认继续？', '危险操作', [System.Windows.MessageBoxButton]::YesNo, [System.Windows.MessageBoxImage]::Warning)
+        if ($r -ne [System.Windows.MessageBoxResult]::Yes) { return }
+      }
     }
     $reds = @($checked | Where-Object { $_.risk -eq 'red' })
     if ($reds.Count -gt 0) {
