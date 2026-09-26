@@ -434,6 +434,14 @@ function New-CleanPage {
     $cb.Add_Unchecked({ param($s, $e) Update-Total; Save-CleanChecks })
     $null = $ig.Children.Add($cb)
 
+    # 行 ToolTip：名称 + 完整展开路径（U3）
+    try {
+      $tip = $It.name
+      $paths0 = @(Get-ItemPaths $It | Select-Object -First 3)
+      if ($paths0.Count -gt 0) { $tip += "`n" + ($paths0 -join "`n") }
+      $row.ToolTip = $tip
+    } catch { }
+
     $nm = New-Object System.Windows.Controls.TextBlock
     $nm.Text = $It.name
     $nm.VerticalAlignment = 'Center'
@@ -847,6 +855,7 @@ function New-SpacePage {
     $tPath.Text = $Path; $tPath.FontSize = 11; $tPath.VerticalAlignment = 'Center'; $tPath.TextTrimming = 'CharacterEllipsis'
     $tPath.Foreground = (New-WpfBrush $script:Theme.Disabled); [System.Windows.Controls.Grid]::SetColumn($tPath, 4); $null = $ig.Children.Add($tPath)
     $row.Child = $ig
+    $row.ToolTip = $Path   # 完整路径（U3）
     # 悬停 / 选中
     $row.Add_MouseEnter({ param($s, $e) try { if ($s.Tag -ne $script:SpaceSel) { $s.Background = (New-WpfBrush '#F4F5F7') } } catch { } })
     $row.Add_MouseLeave({ param($s, $e) try { if ($s.Tag -ne $script:SpaceSel) { $s.Background = (New-WpfBrush '#FFFFFF') } } catch { } })
