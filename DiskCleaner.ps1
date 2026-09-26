@@ -1214,7 +1214,11 @@ function New-LargeFilesPage {
     foreach ($r in $script:LfRows) { $null = $script:LfList.Children.Add((New-LfRow -It $r)) }
     $totalBytes = 0L
     foreach ($r in $script:LfRows) { $totalBytes += [long]$r.Size }
-    $script:LblLTotal.Text = ('共 {0} 个文件 / {1}' -f $script:LfRows.Count, (Format-Bytes $totalBytes))
+    if ($script:LfRows.Count -eq 0) {
+      $script:LblLTotal.Text = '未找到大文件，可降低大小阈值后重新扫描。'
+    } else {
+      $script:LblLTotal.Text = ('共 {0} 个文件 / {1}' -f $script:LfRows.Count, (Format-Bytes $totalBytes))
+    }
   }
 
   # ===== 删除（右键 / 页脚共用；以"删前存在删后不在"判成功） =====
@@ -1461,7 +1465,8 @@ function New-EmptyDirPage {
       $targets = @($script:EmptyList.Children | Where-Object { $_ -is [System.Windows.Controls.Border] -and $_.Tag -and $_.Tag.Path -eq $g.Path })
       foreach ($t in $targets) { $script:EmptyList.Children.Remove($t) }
     }
-    $script:LblETotal.Text = ('共 {0} 个空目录' -f ($script:EmptyList.Children | Where-Object { $_ -is [System.Windows.Controls.Border] }).Count)
+    $leftCnt = ($script:EmptyList.Children | Where-Object { $_ -is [System.Windows.Controls.Border] }).Count
+    $script:LblETotal.Text = $(if ($leftCnt -eq 0) { '没有空目录了。' } else { ('共 {0} 个空目录' -f $leftCnt) })
     try {
       $null = [System.Windows.MessageBox]::Show(('已删除 {0} 个空目录树；被占用/受保护的目录自动跳过。' -f $ok), '完成', [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Information)
     } catch { }
