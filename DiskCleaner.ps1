@@ -293,6 +293,20 @@ public static class FolderPicker {
   return [FolderPicker]::Pick($Title, $InitialDirectory)
 }
 
+# ---------- UI 文案资源（E5：集中管理公共文案，便于统一调整与未来多语言） ----------
+$script:UI = @{
+  Scan          = '开始扫描'
+  Stop          = '停止'
+  OpenFolder    = '打开所在文件夹'
+  CopyPath      = '复制路径'
+  DeleteRecycle = '删除到回收站'
+}
+function Get-UI {
+  param([string]$Key)
+  if ($script:UI.ContainsKey($Key)) { return $script:UI[$Key] }
+  return $Key
+}
+
 function New-CleanPage {
   # ===== 布局：左列表 | 右详情 260px =====
   $g = New-Object System.Windows.Controls.Grid
@@ -733,12 +747,12 @@ function New-SpacePage {
   if ($script:CmbSpaceDrive.Items.Count -gt 0) { $script:CmbSpaceDrive.SelectedIndex = 0 }
   [System.Windows.Controls.Grid]::SetColumn($script:CmbSpaceDrive, 1); $null = $tg.Children.Add($script:CmbSpaceDrive)
   $script:BtnSpaceScan = New-Object System.Windows.Controls.Button
-  $script:BtnSpaceScan.Content = '开始扫描'; $script:BtnSpaceScan.Margin = (New-WpfThickness 10 0 0 0)
+  $script:BtnSpaceScan.Content = (Get-UI 'Scan'); $script:BtnSpaceScan.Margin = (New-WpfThickness 10 0 0 0)
   $script:BtnSpaceScan.Background = (New-WpfBrush $script:Theme.Primary); $script:BtnSpaceScan.Foreground = (New-WpfBrush '#FFFFFF')
   $script:BtnSpaceScan.Padding = (New-WpfThickness 12 4 12 4)
   [System.Windows.Controls.Grid]::SetColumn($script:BtnSpaceScan, 2); $null = $tg.Children.Add($script:BtnSpaceScan)
   $script:BtnSpaceStop = New-Object System.Windows.Controls.Button
-  $script:BtnSpaceStop.Content = '停止'; $script:BtnSpaceStop.IsEnabled = $false; $script:BtnSpaceStop.Margin = (New-WpfThickness 8 0 0 0)
+  $script:BtnSpaceStop.Content = (Get-UI 'Stop'); $script:BtnSpaceStop.IsEnabled = $false; $script:BtnSpaceStop.Margin = (New-WpfThickness 8 0 0 0)
   $script:BtnSpaceStop.Padding = (New-WpfThickness 10 4 10 4)
   [System.Windows.Controls.Grid]::SetColumn($script:BtnSpaceStop, 3); $null = $tg.Children.Add($script:BtnSpaceStop)
   $script:BtnSpaceUp = New-Object System.Windows.Controls.Button
@@ -878,11 +892,11 @@ function New-SpacePage {
     })
     # 右键菜单（每行独立实例；路径经 MenuItem.Tag 传递——事件回调拿不到函数局部变量闭包）
     $menu = New-Object System.Windows.Controls.ContextMenu
-    $miOpen = New-Object System.Windows.Controls.MenuItem; $miOpen.Header = '打开所在文件夹'; $miOpen.Tag = $Path
+    $miOpen = New-Object System.Windows.Controls.MenuItem; $miOpen.Header = (Get-UI 'OpenFolder'); $miOpen.Tag = $Path
     $miOpen.Add_Click({ $p = [string]$_.Source.Tag; Open-InExplorer -Path $p -Select })
-    $miCopy = New-Object System.Windows.Controls.MenuItem; $miCopy.Header = '复制路径'; $miCopy.Tag = $Path
+    $miCopy = New-Object System.Windows.Controls.MenuItem; $miCopy.Header = (Get-UI 'CopyPath'); $miCopy.Tag = $Path
     $miCopy.Add_Click({ try { [System.Windows.Clipboard]::SetText([string]$_.Source.Tag) } catch { } })
-    $miDel = New-Object System.Windows.Controls.MenuItem; $miDel.Header = '删除到回收站'; $miDel.Tag = $Path
+    $miDel = New-Object System.Windows.Controls.MenuItem; $miDel.Header = (Get-UI 'DeleteRecycle'); $miDel.Tag = $Path
     $miDel.Add_Click({ Remove-SpaceDirs -Paths @([string]$_.Source.Tag) })
     $null = $menu.Items.Add($miOpen); $null = $menu.Items.Add($miCopy); $null = $menu.Items.Add($miDel)
     $row.ContextMenu = $menu
@@ -1075,12 +1089,12 @@ function New-LargeFilesPage {
   $script:CmbThL.SelectedIndex = 0
   [System.Windows.Controls.Grid]::SetColumn($script:CmbThL, 3); $null = $tg.Children.Add($script:CmbThL)
   $script:BtnScanL = New-Object System.Windows.Controls.Button
-  $script:BtnScanL.Content = '开始扫描'; $script:BtnScanL.Margin = (New-WpfThickness 12 0 0 0)
+  $script:BtnScanL.Content = (Get-UI 'Scan'); $script:BtnScanL.Margin = (New-WpfThickness 12 0 0 0)
   $script:BtnScanL.Background = (New-WpfBrush $script:Theme.Primary); $script:BtnScanL.Foreground = (New-WpfBrush '#FFFFFF')
   $script:BtnScanL.Padding = (New-WpfThickness 12 4 12 4)
   [System.Windows.Controls.Grid]::SetColumn($script:BtnScanL, 4); $null = $tg.Children.Add($script:BtnScanL)
   $script:BtnStopL = New-Object System.Windows.Controls.Button
-  $script:BtnStopL.Content = '停止'; $script:BtnStopL.IsEnabled = $false; $script:BtnStopL.Margin = (New-WpfThickness 8 0 0 0)
+  $script:BtnStopL.Content = (Get-UI 'Stop'); $script:BtnStopL.IsEnabled = $false; $script:BtnStopL.Margin = (New-WpfThickness 8 0 0 0)
   $script:BtnStopL.Padding = (New-WpfThickness 10 4 10 4)
   [System.Windows.Controls.Grid]::SetColumn($script:BtnStopL, 5); $null = $tg.Children.Add($script:BtnStopL)
   $script:ProgL = New-Object System.Windows.Controls.ProgressBar
@@ -1197,11 +1211,11 @@ function New-LargeFilesPage {
       } catch { }
     })
     $menu = New-Object System.Windows.Controls.ContextMenu
-    $miOpen = New-Object System.Windows.Controls.MenuItem; $miOpen.Header = '打开所在文件夹'; $miOpen.Tag = $It
+    $miOpen = New-Object System.Windows.Controls.MenuItem; $miOpen.Header = (Get-UI 'OpenFolder'); $miOpen.Tag = $It
     $miOpen.Add_Click({ $it = $_.Source.Tag; Open-InExplorer -Path $it.Path -Select })
-    $miCopy = New-Object System.Windows.Controls.MenuItem; $miCopy.Header = '复制路径'; $miCopy.Tag = $It
+    $miCopy = New-Object System.Windows.Controls.MenuItem; $miCopy.Header = (Get-UI 'CopyPath'); $miCopy.Tag = $It
     $miCopy.Add_Click({ $it = $_.Source.Tag; try { [System.Windows.Clipboard]::SetText([string]$it.Path) } catch { } })
-    $miDel = New-Object System.Windows.Controls.MenuItem; $miDel.Header = '删除到回收站'; $miDel.Tag = $It
+    $miDel = New-Object System.Windows.Controls.MenuItem; $miDel.Header = (Get-UI 'DeleteRecycle'); $miDel.Tag = $It
     $miDel.Add_Click({ Remove-LfFiles -Paths @([string]$_.Source.Tag.Path) })
     $null = $menu.Items.Add($miOpen); $null = $menu.Items.Add($miCopy); $null = $menu.Items.Add($miDel)
     $row.ContextMenu = $menu
@@ -1330,12 +1344,12 @@ function New-EmptyDirPage {
   if ($script:CmbDriveE.Items.Count -gt 0) { $script:CmbDriveE.SelectedIndex = 0 }
   [System.Windows.Controls.Grid]::SetColumn($script:CmbDriveE, 1); $null = $tg.Children.Add($script:CmbDriveE)
   $script:BtnScanE = New-Object System.Windows.Controls.Button
-  $script:BtnScanE.Content = '开始扫描'; $script:BtnScanE.Margin = (New-WpfThickness 10 0 0 0)
+  $script:BtnScanE.Content = (Get-UI 'Scan'); $script:BtnScanE.Margin = (New-WpfThickness 10 0 0 0)
   $script:BtnScanE.Background = (New-WpfBrush $script:Theme.Primary); $script:BtnScanE.Foreground = (New-WpfBrush '#FFFFFF')
   $script:BtnScanE.Padding = (New-WpfThickness 12 4 12 4)
   [System.Windows.Controls.Grid]::SetColumn($script:BtnScanE, 2); $null = $tg.Children.Add($script:BtnScanE)
   $script:BtnStopE = New-Object System.Windows.Controls.Button
-  $script:BtnStopE.Content = '停止'; $script:BtnStopE.IsEnabled = $false; $script:BtnStopE.Margin = (New-WpfThickness 8 0 0 0)
+  $script:BtnStopE.Content = (Get-UI 'Stop'); $script:BtnStopE.IsEnabled = $false; $script:BtnStopE.Margin = (New-WpfThickness 8 0 0 0)
   $script:BtnStopE.Padding = (New-WpfThickness 10 4 10 4)
   [System.Windows.Controls.Grid]::SetColumn($script:BtnStopE, 3); $null = $tg.Children.Add($script:BtnStopE)
   $script:ProgE = New-Object System.Windows.Controls.ProgressBar
@@ -1436,11 +1450,11 @@ function New-EmptyDirPage {
     $row.Add_MouseEnter({ param($s, $e) try { $s.Background = (New-WpfBrush '#F4F5F7') } catch { } })
     $row.Add_MouseLeave({ param($s, $e) try { $s.Background = (New-WpfBrush '#FFFFFF') } catch { } })
     $menu = New-Object System.Windows.Controls.ContextMenu
-    $miOpen = New-Object System.Windows.Controls.MenuItem; $miOpen.Header = '打开所在文件夹'; $miOpen.Tag = $It
+    $miOpen = New-Object System.Windows.Controls.MenuItem; $miOpen.Header = (Get-UI 'OpenFolder'); $miOpen.Tag = $It
     $miOpen.Add_Click({ $it = $_.Source.Tag; Open-InExplorer -Path $it.Path -Select })
-    $miCopy = New-Object System.Windows.Controls.MenuItem; $miCopy.Header = '复制路径'; $miCopy.Tag = $It
+    $miCopy = New-Object System.Windows.Controls.MenuItem; $miCopy.Header = (Get-UI 'CopyPath'); $miCopy.Tag = $It
     $miCopy.Add_Click({ $it = $_.Source.Tag; try { [System.Windows.Clipboard]::SetText([string]$it.Path) } catch { } })
-    $miDel = New-Object System.Windows.Controls.MenuItem; $miDel.Header = '删除到回收站'; $miDel.Tag = $It
+    $miDel = New-Object System.Windows.Controls.MenuItem; $miDel.Header = (Get-UI 'DeleteRecycle'); $miDel.Tag = $It
     $miDel.Add_Click({ Remove-EmptyDirs -Items @($_.Source.Tag) })
     $null = $menu.Items.Add($miOpen); $null = $menu.Items.Add($miCopy); $null = $menu.Items.Add($miDel)
     $row.ContextMenu = $menu
@@ -1884,7 +1898,7 @@ function New-DupeFilesPage {
   $script:BtnDupScan.Padding = (New-WpfThickness 12 4 12 4)
   [System.Windows.Controls.Grid]::SetColumn($script:BtnDupScan, 3); $null = $tg.Children.Add($script:BtnDupScan)
   $script:BtnDupStop = New-Object System.Windows.Controls.Button
-  $script:BtnDupStop.Content = '停止'; $script:BtnDupStop.IsEnabled = $false; $script:BtnDupStop.Margin = (New-WpfThickness 8 0 0 0)
+  $script:BtnDupStop.Content = (Get-UI 'Stop'); $script:BtnDupStop.IsEnabled = $false; $script:BtnDupStop.Margin = (New-WpfThickness 8 0 0 0)
   $script:BtnDupStop.Padding = (New-WpfThickness 10 4 10 4)
   [System.Windows.Controls.Grid]::SetColumn($script:BtnDupStop, 4); $null = $tg.Children.Add($script:BtnDupStop)
   $script:ProgD = New-Object System.Windows.Controls.ProgressBar
