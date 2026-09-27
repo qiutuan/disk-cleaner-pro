@@ -523,17 +523,22 @@ function New-CleanPage {
   $script:ScanWorker.WorkerSupportsCancellation = $true
   $scanDoWork = {
     param($s, $e)
-    $items = Load-CleanupItems
-    $rows = New-Object System.Collections.Generic.List[object]
-    $n = 0
-    foreach ($it in $items) {
-      if ($s.CancellationPending) { $e.Cancel = $true; return }
-      $size = Get-ItemSize $it
-      $rows.Add([pscustomobject]@{ Item = $it; Size = $size })
-      $n++
-      $s.ReportProgress([int](100.0 * $n / $items.Count), $it.name)
+    try {
+      $items = Load-CleanupItems
+      $rows = New-Object System.Collections.Generic.List[object]
+      $n = 0
+      foreach ($it in $items) {
+        if ($s.CancellationPending) { $e.Cancel = $true; return }
+        $size = Get-ItemSize $it
+        $rows.Add([pscustomobject]@{ Item = $it; Size = $size })
+        $n++
+        $s.ReportProgress([int](100.0 * $n / $items.Count), $it.name)
+      }
+      $e.Result = @{ Rows = $rows; ConfigWarning = (Get-ConfigWarning) }
+    } catch {
+      # 引擎级兜底（S6）：任何未捕获异常都以 Result.Error 带回，不让 worker 静默死亡
+      $e.Result = @{ Error = ('扫描引擎出错: ' + $_.Exception.Message) }
     }
-    $e.Result = @{ Rows = $rows; ConfigWarning = (Get-ConfigWarning) }
   }
   Register-WorkerBody -Worker $script:ScanWorker -Name 'Scan' -ScriptBlock $scanDoWork
   $script:ScanWorker.add_ProgressChanged({
@@ -550,6 +555,7 @@ function New-CleanPage {
       $script:BtnCancelScan.IsEnabled = $false
       if ($e.Error) { $script:DiskInfo.Text = '扫描出错'; Log-Line ('扫描出错: ' + $e.Error.Message); return }
       if ($e.Cancelled) { Log-Line '扫描已取消'; $script:DiskInfo.Text = '扫描已取消'; return }
+      if ($e.Result.Error) { $script:DiskInfo.Text = '扫描出错'; Log-Line ([string]$e.Result.Error); return }
       # 重建分组列表
       $script:CleanList.Children.Clear()
       $script:CleanCheckboxes = @()
@@ -609,33 +615,38 @@ function New-CleanPage {
   $script:CleanWorker.WorkerReportsProgress = $true
   $cleanDoWork = {
     param($s, $e)
-    $arg = $e.Argument
-    $mode = $arg.Mode
-    $totalPlanned = 0L; $totalReleased = 0L; $skippedTotal = 0; $done = 0
-    $cancelled = $false
-    $rows = New-Object System.Collections.Generic.List[object]
-    foreach ($it in $arg.Items) {
-      if ($s.CancellationPending) { $cancelled = $true; break }
-      if ($mode -eq 'Permanent') {
-        # 永久模式：删除即释放，无需预测量（避免删前删后两次全量扫描）
-        $r = Invoke-SafeDelete $it $mode
-        $planned = [long]$r.Released
-      } else {
-        $planned = Get-ItemSize $it -Force
-        $r = Invoke-SafeDelete $it $mode
+    try {
+      $arg = $e.Argument
+      $mode = $arg.Mode
+      $totalPlanned = 0L; $totalReleased = 0L; $skippedTotal = 0; $done = 0
+      $cancelled = $false
+      $rows = New-Object System.Collections.Generic.List[object]
+      foreach ($it in $arg.Items) {
+        if ($s.CancellationPending) { $cancelled = $true; break }
+        if ($mode -eq 'Permanent') {
+          # 永久模式：删除即释放，无需预测量（避免删前删后两次全量扫描）
+          $r = Invoke-SafeDelete $it $mode
+          $planned = [long]$r.Released
+        } else {
+          $planned = Get-ItemSize $it -Force
+          $r = Invoke-SafeDelete $it $mode
+        }
+        $totalPlanned += [long]$planned
+        $totalReleased += [long]$r.Released
+        $skippedTotal += [int]$r.Skipped
+        $rows.Add([pscustomobject]@{
+          Id = [string]$it.id; Name = [string]$it.name; Category = [string]$it.category; Risk = [string]$it.risk
+          Size = [long]$planned; Released = [long]$r.Released; Skipped = [int]$r.Skipped
+        })
+        $done++
+        $s.ReportProgress([int](100.0 * $done / $arg.Items.Count), ('{0}  释放 {1}' -f $it.name, (Format-Bytes $r.Released)))
       }
-      $totalPlanned += [long]$planned
-      $totalReleased += [long]$r.Released
-      $skippedTotal += [int]$r.Skipped
-      $rows.Add([pscustomobject]@{
-        Id = [string]$it.id; Name = [string]$it.name; Category = [string]$it.category; Risk = [string]$it.risk
-        Size = [long]$planned; Released = [long]$r.Released; Skipped = [int]$r.Skipped
-      })
-      $done++
-      $s.ReportProgress([int](100.0 * $done / $arg.Items.Count), ('{0}  释放 {1}' -f $it.name, (Format-Bytes $r.Released)))
+      # 注意：不设 $e.Cancel —— 取消标志随 Result 带回，保证"取消也导出已完成部分"
+      $e.Result = @{ Planned = $totalPlanned; Released = $totalReleased; Skipped = $skippedTotal; Details = $rows; Cancelled = $cancelled }
+    } catch {
+      # 引擎级兜底（S6）
+      $e.Result = @{ Error = ('清理引擎出错: ' + $_.Exception.Message); Cancelled = $false }
     }
-    # 注意：不设 $e.Cancel —— 取消标志随 Result 带回，保证"取消也导出已完成部分"
-    $e.Result = @{ Planned = $totalPlanned; Released = $totalReleased; Skipped = $skippedTotal; Details = $rows; Cancelled = $cancelled }
   }
   Register-WorkerBody -Worker $script:CleanWorker -Name 'Clean' -ScriptBlock $cleanDoWork
   $script:CleanWorker.add_ProgressChanged({
@@ -657,6 +668,7 @@ function New-CleanPage {
       if ($e.Error) { $script:CleanStatus.Text = '清理出错'; Log-Line ('清理出错: ' + $e.Error.Message); return }
       # 取消标志在 Result.Cancelled 里；Cancelled=true 时访问 e.Result 会抛异常
       try { $res = $e.Result } catch { return }
+      if ($res.Error) { $script:CleanStatus.Text = '清理出错'; Log-Line ([string]$res.Error); return }
       if ($res.Cancelled) {
         $script:CleanStatus.Text = '已取消'
         Log-Line '清理已取消（已完成部分保留）'
@@ -998,12 +1010,17 @@ function New-SpacePage {
   $script:SpaceWorker.WorkerReportsProgress = $true
   $spaceDoWork = {
     param($s, $e)
-    $own = Get-DirSizes -Root ([string]$e.Argument) -W $s
-    if ($s.CancellationPending) { $e.Cancel = $true; return }
-    $tot = Get-MergedDirTotals $own
-    # 顺带构建一次"父目录→直接子级"索引，下钻从 O(全盘目录数) 降到 O(子项数)
-    $idx = Build-ChildrenIndex $tot
-    $e.Result = @{ Own = $own; Total = $tot; Children = $idx }
+    try {
+      $own = Get-DirSizes -Root ([string]$e.Argument) -W $s
+      if ($s.CancellationPending) { $e.Cancel = $true; return }
+      $tot = Get-MergedDirTotals $own
+      # 顺带构建一次"父目录→直接子级"索引，下钻从 O(全盘目录数) 降到 O(子项数)
+      $idx = Build-ChildrenIndex $tot
+      $e.Result = @{ Own = $own; Total = $tot; Children = $idx }
+    } catch {
+      # 引擎级兜底（S6）
+      $e.Result = @{ Error = ('空间扫描出错: ' + $_.Exception.Message) }
+    }
   }
   Register-WorkerBody -Worker $script:SpaceWorker -Name 'Space' -ScriptBlock $spaceDoWork
   $script:SpaceWorker.add_ProgressChanged({
@@ -1017,6 +1034,7 @@ function New-SpacePage {
       $script:ProgSpace.IsIndeterminate = $false; $script:ProgSpace.Value = 0
       if ($e.Error) { $script:LblSpaceStatus.Text = '扫描出错'; Log-Line ('空间分析出错: ' + $e.Error.Message); return }
       if ($e.Cancelled) { $script:LblSpaceStatus.Text = '已取消'; return }
+      if ($e.Result.Error) { $script:LblSpaceStatus.Text = '扫描出错'; Log-Line ([string]$e.Result.Error); return }
       $script:SpaceOwn = $e.Result.Own
       $script:SpaceTotal = $e.Result.Total
       $script:SpaceChildren = $e.Result.Children
