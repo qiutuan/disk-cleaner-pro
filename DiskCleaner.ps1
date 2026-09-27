@@ -1296,9 +1296,12 @@ function New-LargeFilesPage {
   $lfDoWork = {
     param($s, $e)
     $a = $e.Argument
-    $list = Get-LargeFiles -Root $a.Root -Threshold $a.Threshold -W $s
+    $list = @(Get-LargeFiles -Root $a.Root -Threshold $a.Threshold -W $s)
     if ($s.CancellationPending) { $e.Cancel = $true; return }
-    $e.Result = $list
+    # 行数上限（P7）：防超大结果拖垮渲染
+    $truncated = $false
+    if ($list.Count -gt 3000) { $list = @($list | Select-Object -First 3000); $truncated = $true }
+    $e.Result = @{ List = $list; Truncated = $truncated }
   }
   Register-WorkerBody -Worker $script:LfWorker -Name 'Lf' -ScriptBlock $lfDoWork
   $script:LfWorker.add_ProgressChanged({
@@ -1312,10 +1315,12 @@ function New-LargeFilesPage {
       $script:ProgL.IsIndeterminate = $false; $script:ProgL.Value = 0
       if ($e.Error) { $script:LblL.Text = '扫描出错'; Log-Line ('大文件扫描出错: ' + $e.Error.Message); return }
       if ($e.Cancelled) { $script:LblL.Text = '已取消'; return }
-      $script:LfRows = @($e.Result)
+      $res = $e.Result
+      $script:LfRows = @($res.List)
       $script:LfSel = $null
       Render-Lf
       $script:LblL.Text = '完成'
+      if ($res.Truncated) { Log-Line '大文件结果超过 3000 条，仅显示前 3000 条。' }
       Log-Line ('大文件扫描完成: {0} 个' -f $script:LfRows.Count)
     } catch { Log-Line ('大文件完成处理出错: ' + $_.Exception.Message) }
   })
