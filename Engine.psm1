@@ -383,7 +383,19 @@ function Load-SizeCache {
         }
       }
     }
-  } catch { }
+  } catch {
+    # 缓存文件损坏兜底（S8）：备份损坏文件后忽略，下次启动全量重测
+    Write-CleanLog ('尺寸缓存损坏，已忽略并备份: ' + $_.Exception.Message)
+    try {
+      $p = Join-Path $script:DataDir 'size-cache.json'
+      if (Test-Path $p) {
+        $bk = Join-Path $script:DataDir 'backups'
+        if (-not (Test-Path -LiteralPath $bk)) { New-Item -ItemType Directory -Force -Path $bk | Out-Null }
+        Copy-Item -LiteralPath $p -Destination (Join-Path $bk ('size-cache.bad-{0}.json' -f (Get-Date -Format 'yyyyMMddHHmmss'))) -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $p -Force -ErrorAction SilentlyContinue
+      }
+    } catch { }
+  }
 }
 
 function Clear-SizeCache {

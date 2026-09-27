@@ -702,7 +702,20 @@ function Load-Settings {
       if ($o.DeleteMode -eq 'Permanent') { $script:Settings.DeleteMode = 'Permanent' }
       if ($null -ne $o.Checked) { $script:Settings.Checked = @($o.Checked) }
     }
-  } catch { }
+  } catch {
+    # 设置损坏兜底（S8）：备份后回默认值，不让程序无法启动
+    Write-CleanLog ('设置文件损坏，已回退默认并备份: ' + $_.Exception.Message)
+    try {
+      $p = Join-Path $script:DataDir 'settings.json'
+      if (Test-Path $p) {
+        $bk = Join-Path $script:DataDir 'backups'
+        if (-not (Test-Path -LiteralPath $bk)) { New-Item -ItemType Directory -Force -Path $bk | Out-Null }
+        Copy-Item -LiteralPath $p -Destination (Join-Path $bk ('settings.bad-{0}.json' -f (Get-Date -Format 'yyyyMMddHHmmss'))) -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $p -Force -ErrorAction SilentlyContinue
+      }
+    } catch { }
+    $script:Settings = @{ DeleteMode = 'Recycle'; Checked = @() }
+  }
 }
 function Save-Settings {
   try {
