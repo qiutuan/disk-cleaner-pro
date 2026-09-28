@@ -1529,9 +1529,12 @@ function New-EmptyDirPage {
   $edDoWork = {
     param($s, $e)
     $a = $e.Argument
-    $list = Get-EmptyDirs -Root $a.Root -W $s
+    $list = @(Get-EmptyDirs -Root $a.Root -W $s)
     if ($s.CancellationPending) { $e.Cancel = $true; return }
-    $e.Result = $list
+    # 行数上限（P7）：防超大结果拖垮渲染
+    $truncated = $false
+    if ($list.Count -gt 3000) { $list = @($list | Select-Object -First 3000); $truncated = $true }
+    $e.Result = @{ List = $list; Truncated = $truncated }
   }
   Register-WorkerBody -Worker $script:EmptyWorker -Name 'EmptyDir' -ScriptBlock $edDoWork
   $script:EmptyWorker.add_ProgressChanged({
@@ -1545,11 +1548,13 @@ function New-EmptyDirPage {
       $script:ProgE.IsIndeterminate = $false; $script:ProgE.Value = 0
       if ($e.Error) { $script:LblE.Text = '扫描出错'; Log-Line ('空文件夹扫描出错: ' + $e.Error.Message); return }
       if ($e.Cancelled) { $script:LblE.Text = '已取消'; return }
-      $rows = @($e.Result)
+      $res = $e.Result
+      $rows = @($res.List)
       $script:EmptyList.Children.Clear(); $script:EmptyCheckboxes = @()
       foreach ($r in $rows) { $null = $script:EmptyList.Children.Add((New-EmptyRow -It $r)) }
       $script:LblETotal.Text = ('共 {0} 个空目录' -f $rows.Count)
       $script:LblE.Text = '完成'
+      if ($res.Truncated) { Log-Line '空目录结果超过 3000 条，仅显示前 3000 条。' }
       Log-Line ('空文件夹扫描完成: {0} 个空子树' -f $rows.Count)
     } catch { Log-Line ('空文件夹完成处理出错: ' + $_.Exception.Message) }
   })
@@ -2086,9 +2091,12 @@ function New-DupeFilesPage {
   $script:DupWorker.WorkerReportsProgress = $true
   $dupDoWork = {
     param($s, $e)
-    $groups = Get-DupeGroups -Root ([string]$e.Argument) -W $s
+    $groups = @(Get-DupeGroups -Root ([string]$e.Argument) -W $s)
     if ($s.CancellationPending) { $e.Cancel = $true; return }
-    $e.Result = $groups
+    # 行数上限（P7）：防超大结果拖垮渲染
+    $truncated = $false
+    if ($groups.Count -gt 3000) { $groups = @($groups | Select-Object -First 3000); $truncated = $true }
+    $e.Result = @{ List = $groups; Truncated = $truncated }
   }
   Register-WorkerBody -Worker $script:DupWorker -Name 'Dup' -ScriptBlock $dupDoWork
   $script:DupWorker.add_ProgressChanged({
@@ -2102,9 +2110,11 @@ function New-DupeFilesPage {
       $script:ProgD.IsIndeterminate = $false; $script:ProgD.Value = 0
       if ($e.Error) { $script:LblD.Text = '检测出错'; Log-Line ('重复文件检测出错: ' + $e.Error.Message); return }
       if ($e.Cancelled) { $script:LblD.Text = '已取消'; return }
-      $script:DupRows = @($e.Result)
+      $res = $e.Result
+      $script:DupRows = @($res.List)
       Render-Dup
       $script:LblD.Text = '完成'
+      if ($res.Truncated) { Log-Line '重复文件结果超过 3000 条，仅显示前 3000 条。' }
       $grp = @($script:DupRows | ForEach-Object { $_.Group } | Sort-Object -Unique).Count
       Log-Line ('重复文件检测完成: {0} 组 / {1} 文件' -f $grp, $script:DupRows.Count)
     } catch { Log-Line ('重复文件完成处理出错: ' + $_.Exception.Message) }
