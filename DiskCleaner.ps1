@@ -2449,7 +2449,7 @@ function New-StartupPage {
 $script:WpfShellXaml = @'
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="DiskCleanerPro - C 盘智能清理工具"
+        Title="DiskCleanerPro v1.4.0 - C 盘智能清理工具"
         Width="1200" Height="800" MinWidth="960" MinHeight="640"
         WindowStartupLocation="CenterScreen"
         Background="#F5F6F8" FontFamily="Microsoft YaHei UI" FontSize="13"
@@ -3112,6 +3112,7 @@ function Run-SelfTest {
 #endregion
 
 #region 入口
+$script:Version = '1.4.0'
 if ($SelfTest) { Run-SelfTest; Flush-CleanLog; return }
 
 # 单实例互斥（A5）：已运行则提示并退出（自测模式不占用）
