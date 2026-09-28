@@ -1,0 +1,38 @@
+name: Engine Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install PowerShell (cross-platform)
+        shell: bash
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y powershell
+
+      - name: Parse checks (Engine / UI / Tests)
+        shell: pwsh
+        run: |
+          $errs = $null; $toks = $null
+          [System.Management.Automation.Language.Parser]::ParseFile("Engine.psm1", [ref]$toks, [ref]$errs) | Out-Null
+          if ($errs.Count) { $errs | ForEach-Object { Write-Error $_.Message }; exit 1 }
+          [System.Management.Automation.Language.Parser]::ParseFile("DiskCleaner.ps1", [ref]$toks, [ref]$errs) | Out-Null
+          if ($errs.Count) { $errs | ForEach-Object { Write-Error $_.Message }; exit 1 }
+          [System.Management.Automation.Language.Parser]::ParseFile("Tests/Engine.Tests.ps1", [ref]$toks, [ref]$errs) | Out-Null
+          if ($errs.Count) { $errs | ForEach-Object { Write-Error $_.Message }; exit 1 }
+          Write-Host "PARSE OK"
+
+      - name: Engine unit tests
+        shell: pwsh
+        run: |
+          # 引擎测试在隔离的临时 testdata 目录运行，只自建数据，绝不触碰真实文件
+          ./Tests/Engine.Tests.ps1
+          if ($LASTEXITCODE -ne 0) { exit 1 }
