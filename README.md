@@ -77,11 +77,32 @@
 ## 目录结构
 
 ```
-├── 启动清理工具.bat       # 双击启动
-├── DiskCleaner.ps1        # 主程序
-├── config\cleanup-items.json  # 自定义清理项
-└── runtime\               # 运行时数据（设置/扫描缓存/日志/清理报告，不入库）
+├── 启动清理工具.bat       # 双击启动（管理员 + STA）
+├── DiskCleaner.ps1        # 主程序（UI 壳：主题/9 页界面/主窗口/自测）
+├── Engine.psm1            # 引擎模块（扫描/删除/白名单/配置/缓存/附加功能，48 个导出函数）
+├── Tests\Engine.Tests.ps1 # 引擎单元测试（35 项，可在 Linux pwsh 下运行）
+├── .github\workflows\test.yml  # CI：push/PR 自动跑解析检查 + 单元测试
+├── config\cleanup-items.json   # 自定义清理项
+├── CHANGELOG.md           # 版本变更记录
+└── runtime\               # 运行时数据（设置/扫描缓存/日志/清理报告/损坏文件备份，不入库）
 ```
+
+## 开发与自测
+
+- 引擎为独立模块，worker 通过 `Import-Module Engine.psm1` 在隔离 runspace 中执行，
+  每次初始化只解析一次模块；共享大小缓存同一对象原地读写，杜绝多 runspace 孤儿化
+- 自测（不触碰真实文件，仅在工具目录内自建 testdata）：
+  ```powershell
+  pwsh -NoProfile -File DiskCleaner.ps1 -SelfTest
+  ```
+  或单独跑引擎测试：
+  ```powershell
+  pwsh -NoProfile -File Tests\Engine.Tests.ps1
+  ```
+- 运行边界：运行时数据/日志/自测数据只写在工具目录内（`runtime\` 与自建 testdata），
+  绝不写 `%LOCALAPPDATA%` 等系统位置；自测绝不删除真实文件
+- 新增清理项只需编辑 `config\cleanup-items.json`（见上节字段说明）；配置损坏时
+  自动备份到 `runtime\backups` 并回退内置兜底清单
 
 ## 许可
 
