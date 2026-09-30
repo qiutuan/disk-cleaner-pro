@@ -1,6 +1,9 @@
 # 运行时数据（工具生成，不入库）
 runtime/
 
+# 发布包（构建产物，经 present_files 交付）
+*.zip
+
 # 自测临时数据
 testdata/
 
