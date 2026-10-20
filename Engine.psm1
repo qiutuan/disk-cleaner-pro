@@ -470,7 +470,7 @@ function Add-FailureNote {
 function Remove-DirContents {
   # 统一迭代实现（无深递归，防栈溢出）：
   #  - Recycle：保留根目录；子目录整棵进回收站（先测量用于报告），失败则逐项降级
-  #  - Permanent：逐个删除文件并累计实际释放字节（无需预测量，P1）；目录后序删除
+  #  - Permanent：逐个删除文件并累计实际释放字节（无需预测量，P1）；目录后序删除并连带删除根
   # 重解析点只删链接本身，绝不枚举进链接目标
   param([string]$Dir, [string]$Mode, [System.Collections.Generic.List[string]]$FailureLog = $null)
   try {
@@ -1104,46 +1104,22 @@ function Get-DupeGroups {
     }
   }
   $bySize = $null
-  # 阶段2：仅对头部相同的组做全量 SHA-256（并行）
-  $byHash = [System.Collections.Concurrent.ConcurrentDictionary[string, System.Collections.Generic.List[string]]]::new()
+  # 阶段2：仅对头部相同的组做全量 SHA-256
+  # （曾用 Parallel.ForEach 并行：脚本块在 ThreadPool 线程上无 Runspace 必抛 AggregateException，
+  #   实际一直落入串行兜底，故直接串行——结果不变，省掉每次扫描的无谓异常开销）
+  $byHash = @{}
   $hashTotal = 0
-  foreach ($job in $fullJobs) {
-    $hashTotal += $job.Paths.Count
-  }
+  foreach ($job in $fullJobs) { $hashTotal += $job.Paths.Count }
   $hashDone = 0
-  $lock = New-Object object
-  try {
-    $actions = New-Object System.Collections.Generic.List[System.Action[string]]
-    foreach ($job in $fullJobs) {
-      foreach ($f in $job.Paths) {
-        $path = [string]$f
-        $actions.Add([System.Action[string]]{
-          param($fp)
-          if ($W -and $W.CancellationPending) { return }
-          $h = Get-FileHashSha256 $fp
-          if (-not $h) { return }
-          $list = $byHash.GetOrAdd($h, { New-Object System.Collections.Generic.List[string] })
-          [System.Threading.Monitor]::Enter($lock)
-          try { $list.Add($fp) } finally { [System.Threading.Monitor]::Exit($lock) }
-          [System.Threading.Monitor]::Enter($lock)
-          try { $hashDone++ } finally { [System.Threading.Monitor]::Exit($lock) }
-          if (($hashDone % 50) -eq 0 -and $W) { $W.ReportProgress(0, ("全量哈希 {0}/{1}..." -f $hashDone, $hashTotal)) }
-        })
-      }
-    }
-    [System.Threading.Tasks.Parallel]::ForEach($actions, [System.Threading.Tasks.ParallelOptions]::new(), [System.Action[System.Action[string]]]{
-      param($a) $a.Invoke()
-    })
-  } catch {
-    # 并行失败 → 串行兜底
-    foreach ($job in $fullJobs) {
-      foreach ($f in $job.Paths) {
-        if ($W -and $W.CancellationPending) { return $null }
-        $h = Get-FileHashSha256 $f
-        if (-not $h) { continue }
-        $list = $byHash.GetOrAdd($h, { New-Object System.Collections.Generic.List[string] })
-        $null = $list.Add($f)
-      }
+  foreach ($job in $fullJobs) {
+    foreach ($f in $job.Paths) {
+      if ($W -and $W.CancellationPending) { return $null }
+      $h = Get-FileHashSha256 $f
+      if (-not $h) { continue }
+      if (-not $byHash.ContainsKey($h)) { $byHash[$h] = New-Object System.Collections.Generic.List[string] }
+      $byHash[$h].Add([string]$f)
+      $hashDone++
+      if (($hashDone % 50) -eq 0 -and $W) { $W.ReportProgress(0, ("全量哈希 {0}/{1}..." -f $hashDone, $hashTotal)) }
     }
   }
   $result = New-Object System.Collections.Generic.List[object]
@@ -1297,14 +1273,4 @@ Export-ModuleMember -Function @(
   'Get-StartupItems', 'Get-StartupApprovedStatus', 'Backup-StartupReg',
   'Format-EngineBytes'
 )
-
-function Format-EngineBytes {
-  # 引擎侧字节格式化（大文件/重复文件行数据预格式化用，UI 主脚本另有 Format-Bytes）
-  param([long]$Bytes)
-  if ($Bytes -le 0) { return '0 B' }
-  $units = 'B', 'KB', 'MB', 'GB', 'TB'
-  $i = 0; $v = [double]$Bytes
-  while ($v -ge 1024 -and $i -lt 4) { $v /= 1024; $i++ }
-  return ('{0:N1} {1}' -f $v, $units[$i])
-}
 #endregion
