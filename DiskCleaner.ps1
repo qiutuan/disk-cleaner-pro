@@ -2911,6 +2911,7 @@ function New-MainWindow {
     $script:SuppressPrompt = $true
     try { foreach ($cb in $script:CleanCheckboxes) { $cb.IsChecked = $true } } finally { $script:SuppressPrompt = $false }
     Update-Total
+    Save-CleanChecks
   })
   $btnNone.Add_Click({
     $script:SuppressPrompt = $true
