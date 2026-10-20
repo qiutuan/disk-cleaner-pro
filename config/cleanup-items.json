@@ -143,9 +143,10 @@
     "paths": [],
     "risk": "yellow",
     "defaultChecked": false,
-    "method": "exec",
-    "execCommand": "DISM /Online /Cleanup-Image /StartComponentCleanup /Quiet",
-    "execTimeoutSec": 600,
+    "method": "exec-process",
+    "process": "dism.exe",
+    "args": ["/Online", "/Cleanup-Image", "/StartComponentCleanup", "/Quiet"],
+    "timeoutSec": 600,
     "admin": true
   },
   {
@@ -199,7 +200,7 @@
     "risk": "green",
     "defaultChecked": false,
     "method": "exec",
-    "execCommand": "$p = Join-Path $env:APPDATA 'Mozilla\\Firefox\\Profiles'; if (Test-Path $p) { Get-ChildItem $p -Directory | ForEach-Object { $c = Join-Path $_.FullName 'cache2'; if (Test-Path $c) { Remove-Item -LiteralPath $c -Recurse -Force -ErrorAction SilentlyContinue } } }",
+    "execCommand": "Remove-Item -LiteralPath (Get-ChildItem (Join-Path $env:APPDATA 'Mozilla\\Firefox\\Profiles') -Directory -ErrorAction SilentlyContinue | ForEach-Object { Join-Path $_.FullName 'cache2' }) -Recurse -Force -ErrorAction SilentlyContinue",
     "execTimeoutSec": 120,
     "detect": { "type": "path-exists", "value": ["%APPDATA%\\Mozilla\\Firefox\\Profiles"] }
   },
@@ -431,9 +432,10 @@
     "paths": [],
     "risk": "yellow",
     "defaultChecked": false,
-    "method": "exec",
-    "execCommand": "docker system prune -af --volumes",
-    "execTimeoutSec": 300,
+    "method": "exec-process",
+    "process": "docker.exe",
+    "args": ["system", "prune", "-af", "--volumes"],
+    "timeoutSec": 300,
     "admin": true,
     "detect": { "type": "command-exists", "value": ["docker"] }
   },
