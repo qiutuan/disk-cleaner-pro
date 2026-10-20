@@ -54,10 +54,10 @@ try {
   Assert-True ($kids -and $kids.Count -eq 3) ('根子级索引 3 项（实测 ' + $(if ($kids) { $kids.Count } else { 0 }) + '）')
   Assert-True ($kids -contains $bDir) '子级索引含 b'
 
-  # ---- 3) 大文件分析 ----
-  $lf = Get-LargeFiles -Root $tree -ThresholdMB 1
-  Assert-True ($lf.Count -ge 1) ('大文件 >=1（实测 ' + $lf.Count + '）')
-  Assert-True ($lf[0].Size -ge 1000) '大文件 Size 字段正确'
+  # ---- 3) 大文件分析（测试数据 1000/2000/3000 字节；阈值 1024 → 仅 2 个达标，验证阈值过滤真实生效） ----
+  $lf = @(Get-LargeFiles -Root $tree -Threshold 1024L)
+  Assert-True ($lf.Count -eq 2) ('大文件 >=1KB 共 2 个（实测 ' + $lf.Count + '）')
+  Assert-True (@($lf | Where-Object { $_.Size -lt 1024 }).Count -eq 0) '小于阈值的文件未进入结果'
 
   # ---- 4) 空文件夹 ----
   $empty = Join-Path $td 'empties'
@@ -90,7 +90,7 @@ try {
   $h1 = Get-FileHashSha256 $f
   $h2 = Get-FileHashSha256 $f
   Assert-True ($h1 -eq $h2) 'SHA256 稳定'
-  $p1 = Get-FileHashSha256Partial $f 64
+  $p1 = Get-FileHashSha256Partial $f
   Assert-True ($p1.Length -eq 64) '部分哈希 64 位'
 
   # ---- 7) 白名单 ----
